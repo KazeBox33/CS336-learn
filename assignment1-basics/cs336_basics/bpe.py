@@ -18,7 +18,7 @@ def train_bpe(
     merges=[]
 
     text=Path(input_path).read_text(encoding="utf-8")
-    special_pattern="|".join(re.escape(token) for token in special_tokens)
+    special_pattern="|".join(re.escape(token) for token in special_tokens) #python 的生成器
 
     if special_tokens:
         pass
