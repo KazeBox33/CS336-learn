@@ -109,6 +109,12 @@ ipython_config.py
 #   https://pdm.fming.dev/#use-with-ide
 .pdm.toml
 
+# CS336 local datasets and training outputs
+TinyStoriesV2-GPT4-*.txt
+owt_train.txt
+owt_valid.txt
+outputs/
+
 # PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
 __pypackages__/
 
