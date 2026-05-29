@@ -18,7 +18,7 @@ class Linear(nn.Module):
         self.in_features=in_features
         self.out_features=out_features
 
-        self.weight=nn.Paramter(
+        self.weight=nn.Parameter(
             torch.empty(
                 out_features,
                 in_features,
@@ -30,5 +30,5 @@ class Linear(nn.Module):
         std=math.sqrt(2/(in_features+out_features))
         nn.init.trunc_normal_(self.weight, mean=0.0, std=std, a=-3 * std, b=3 * std) # 初始化Linear 层
 
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            return x @ self.weight.T
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x @ self.weight.T
