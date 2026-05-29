@@ -2,34 +2,60 @@
 
 This repository tracks my self-study of Stanford CS336: Language Modeling from Scratch.
 
-## Goals
+本仓库用于记录我自学 Stanford CS336「从零实现语言模型」的过程，重点是通过 Assignment 1 打通从原始文本到小型 Transformer LM 训练的完整链路。
 
-- Build a working understanding of modern language model training from raw text to generation.
-- Implement the core components by hand: byte-level BPE tokenization, Transformer LM modules, loss, optimizer, training loop, checkpointing, and decoding.
-- Learn the engineering workflow around tests, debugging, profiling, and experiment logging.
+## Goals / 学习目标
 
-## Current Progress
+- Understand the end-to-end language modeling pipeline: raw text -> tokenizer -> token IDs -> Transformer LM -> training -> evaluation -> generation.
+- 从工程角度理解大语言模型训练流程：原始语料、Tokenizer、数据序列化、Transformer 模块、训练循环、评估与生成。
+- Implement core components by hand instead of treating them as black boxes.
+- 通过手写核心组件来理解实现细节，而不是只调用高层框架 API。
+- Practice debugging, testing, profiling, and performance-aware implementation.
+- 练习测试、调试、性能分析和面向效率的实现方式。
 
-- Watched Lecture 1: overview and tokenization.
-- Watched Lecture 2: PyTorch and resource accounting.
-- Watched Lecture 3: Transformer architectures and hyperparameters.
-- Set up the Spring 2025 Assignment 1 workspace in `assignment1-basics/`.
-- Started Assignment 1 Section 2, BPE tokenizer training.
+## Current Progress / 当前进度
 
-## Assignment 1 Status
+### Completed / 已完成
 
-Current focus: `train_bpe`.
+- Set up the CS336 Assignment 1 workspace under `assignment1-basics/`.
+- 已完成 `assignment1-basics/` 的 A1 环境配置。
+- Implemented byte-level BPE tokenizer training with special-token-aware pre-tokenization.
+- 已实现 byte-level BPE tokenizer 训练，包括 special token 分割与 GPT-2 regex pre-tokenization。
+- Added multiprocessing pre-tokenization and incremental pair-stat updates for faster BPE training.
+- 已加入多进程预分词和增量 pair 统计更新，提升 BPE 训练效率。
+- Trained a TinyStories BPE tokenizer with vocab size 10,000 and `<|endoftext|>`.
+- 已在 TinyStories 上训练 10K 词表 BPE tokenizer，并保留 `<|endoftext|>` special token。
+- Implemented BPE `Tokenizer` with `encode`, `decode`, special-token handling, and `encode_iterable`.
+- 已实现 BPE `Tokenizer`，支持 `encode`、`decode`、special token 保留和流式 `encode_iterable`。
+- Passed tokenizer and BPE training tests.
+- 已通过 tokenizer 与 BPE training 相关测试。
 
-Completed:
+Validation / 验证：
 
-- Project environment configured with `uv`.
-- VS Code/Pylance/Ruff setup for WSL development.
-- `tests/adapters.py` now routes `run_train_bpe` to `cs336_basics.bpe.train_bpe`.
-- Initial byte vocabulary setup started in `cs336_basics/bpe.py`.
+```bash
+uv run pytest tests/test_train_bpe.py -q
+uv run pytest tests/test_tokenizer.py -q
+```
 
-Next:
+### In Progress / 进行中
 
-- Finish special-token-aware pre-tokenization.
-- Build `pretoken_counts`.
-- Implement BPE pair counting and merge loop.
-- Pass `uv run pytest tests/test_train_bpe.py`.
+- Starting PyTorch model components for A1, beginning with a custom `Linear` module.
+- 正在进入 A1 的 PyTorch 模型组件实现，当前从自定义 `Linear` 层开始。
+- Current focus: understanding `nn.Module`, `nn.Parameter`, weight initialization, and matrix multiplication semantics.
+- 当前重点：理解 `nn.Module`、`nn.Parameter`、权重初始化和矩阵乘法语义。
+
+### Next / 下一步
+
+- Finish and test `Linear`.
+- 完成并测试 `Linear` 层。
+- Implement and test `Embedding`, `RMSNorm`, `SwiGLU`, attention, Transformer block, and Transformer LM.
+- 继续实现并测试 `Embedding`、`RMSNorm`、`SwiGLU`、Attention、Transformer Block 和 Transformer LM。
+- Return to tokenizer experiments when needed: compression ratio, throughput, OpenWebText tokenizer, and token ID serialization.
+- 后续回到 tokenizer 实验：压缩率、吞吐量、OpenWebText tokenizer，以及 token id 序列化。
+
+## Notes / 说明
+
+- This repository is for self-directed learning and implementation practice.
+- 本仓库用于自学和实现练习。
+- Large local datasets and generated outputs are ignored by git.
+- 大型本地数据集和训练输出不会提交到 git。
