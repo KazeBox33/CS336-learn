@@ -76,5 +76,75 @@ class RMSNorm(nn.Module):
         dtype:torch.dtype|None =None 
     ):
         super().__init__()
+        
+        self.d_model=d_model
+        self.eps=eps
+        self.weight=nn.Parameter(
+            torch.ones(d_model,device=device,dtype=dtype)
+        )
+    
+    def forward(self,x:torch.Tensor) -> torch.Tensor:
+        in_dtype=x.dtype
+        x=x.to(torch.float32)
+
+        rms=torch.sqrt(torch.mean(x*x,dim=-1,keepdim=True)+self.eps)
+        result=x/rms*self.weight.to(torch.float32)
+
+        return result.to(in_dtype)
 
 
+def silu(x:torch.Tensor) ->torch.Tensor:
+    return x*torch.sigmoid(x)
+
+
+class SwiGLU(nn.Module):
+    def __init__(
+        self,
+        d_model:int,
+        d_ff:int,
+        device: torch.device| None=None,
+        dtype:torch.dtype| None=None,
+    ):
+        super().__init__()
+
+        self.d_model=d_model
+        self.d_ff=d_ff
+
+        self.w1=Linear(d_model,d_ff,device=device,dtype=dtype )
+        self.w2=Linear(d_ff,d_model,device=device,dtype=dtype)
+        self.w3=Linear(d_model,d_ff,device=device,dtype=dtype)
+
+    def forward(self,x:torch.Tensor) ->torch.Tensor:
+        return self.w2(silu(self.w1(x))*self.w3(x))
+    
+
+def scaled_dot_product_attention(
+        Q:torch.Tensor,
+        K:torch.Tensor,
+        V:torch.Tensor,
+        mask:torch.Tensor|None=None
+)->torch.Tensor:
+    d_k=Q.shape[-1]
+    scores=Q@K.transpose(-2,-1)/math.sqrt(d_k)
+
+    if mask is not None:
+        scores=scores.masked_fill(~mask,float("-inf"))
+
+    attention_weights=torch.softmax(scores,dim=-1)
+
+    return attention_weights @ V
+
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(
+            self,
+            d_model:int,
+            num_heads:int,
+            device:torch.device|None=None,
+            dtype: torch.dtype| None=None,
+    ): 
+        super().__init__()
+
+        assert d_model%num_heads==0
+
+        
