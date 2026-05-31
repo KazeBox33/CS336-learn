@@ -251,3 +251,131 @@ def softmax(x:torch.Tensor,dim:int) ->torch.Tensor:
 
 
 # 下一部分是Transformer Block
+
+class TransformerBlock(nn.Module):
+    def __init__(
+            self,
+            d_model:int,
+            num_heads:int,
+            d_ff:int,
+            max_seq_len:int,
+            theta:float,
+            device:torch.device|None=None,
+            dtype:torch.dtype|None=None,
+    ):
+        super().__init__()
+
+        self.ln1=RMSNorm(d_model,device=device,dtype=dtype)
+        self.attn=MultiHeadSelfAttention(
+            d_model=d_model,
+            num_heads=num_heads,
+            max_seq_len=max_seq_len,
+            theta=theta,
+            device=device,
+            dtype=dtype
+        )
+
+        self.ln2=RMSNorm(d_model,device=device,dtype=dtype)
+        self.ffn=SwiGLU(
+            d_model=d_model,
+            d_ff=d_ff,
+            device=device,
+            dtype=dtype
+        )
+    
+    def forward(
+        self,
+        x:torch.Tensor,
+        token_positions:torch.Tensor|None=None,
+    )-> torch.Tensor:
+        x=x+self.attn(self.ln1(x),token_positions)
+        x=x+self.ffn(self.ln2(x))
+
+        return x
+    
+# Transformer Language Model
+
+class TransformerLM(nn.Module):
+    def __init__(
+            self,
+            vocab_size:int,
+            context_length:int,  # 表示模型一次性最多能看多少个token
+            d_model:int,
+            num_layers:int,
+            num_heads:int,
+            d_ff:int,
+            rope_theta:float,
+            device:torch.device|None=None,
+            dtype:torch.dtype|None=None,
+    ):
+        super().__init__()
+
+        self.context_length = context_length
+
+        self.token_embeddings=Embedding(
+            vocab_size,
+            d_model,
+            device=device,
+            dtype=dtype,
+        )
+
+        self.layers=nn.ModuleList(
+            [
+                TransformerBlock(
+                    d_model=d_model,
+                    num_heads=num_heads,
+                    d_ff=d_ff,
+                    max_seq_len=context_length,
+                    theta=rope_theta,
+                    device=device,
+                    dtype=dtype,
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+        self.ln_final=RMSNorm(d_model,device=device,dtype=dtype)
+        self.lm_head=Linear(
+            d_model,
+            vocab_size,
+            device=device,
+            dtype=dtype
+        )
+
+    def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
+        if token_ids.ndim < 1:
+            raise ValueError("token_ids must have at least one dimension")
+
+        sequence_length = token_ids.shape[-1]
+
+        if sequence_length > self.context_length:
+            raise ValueError(
+                f"sequence_length {sequence_length} exceeds context_length {self.context_length}"
+            )
+
+        token_positions=torch.arange(
+                sequence_length,
+                device=token_ids.device
+            )
+        
+        x = self.token_embeddings(token_ids)
+
+        for layer in self.layers:
+            x=layer(x,token_positions)
+
+        x=self.ln_final(x)
+        logits=self.lm_head(x)
+
+        return logits
+
+
+# 第四部分 反向传播梯度更新
+
+def cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+    log_normalizer = torch.logsumexp(logits, dim=-1)
+    target_logits = torch.gather(
+        logits,
+        dim=-1,
+        index=targets.unsqueeze(-1),
+    ).squeeze(-1)
+    return (log_normalizer - target_logits).mean()

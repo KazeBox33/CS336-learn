@@ -343,7 +343,33 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    from cs336_basics.modules import TransformerBlock
+
+    block = TransformerBlock(
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        max_seq_len=max_seq_len,
+        theta=theta,
+        device=in_features.device,
+        dtype=in_features.dtype,
+    )
+
+    block.load_state_dict(
+        {
+            "attn.q_proj.weight": weights["attn.q_proj.weight"],
+            "attn.k_proj.weight": weights["attn.k_proj.weight"],
+            "attn.v_proj.weight": weights["attn.v_proj.weight"],
+            "attn.o_proj.weight": weights["attn.output_proj.weight"],
+            "ln1.weight": weights["ln1.weight"],
+            "ffn.w1.weight": weights["ffn.w1.weight"],
+            "ffn.w2.weight": weights["ffn.w2.weight"],
+            "ffn.w3.weight": weights["ffn.w3.weight"],
+            "ln2.weight": weights["ln2.weight"],
+        }
+    )
+
+    return block(in_features)
 
 
 def run_transformer_lm(
@@ -425,7 +451,45 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    from cs336_basics.modules import TransformerLM
+
+    model = TransformerLM(
+        vocab_size=vocab_size,
+        context_length=context_length,
+        d_model=d_model,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        rope_theta=rope_theta,
+        device=in_indices.device,
+        dtype=weights["token_embeddings.weight"].dtype,
+    )
+
+    state_dict = {
+        "token_embeddings.weight": weights["token_embeddings.weight"],
+        "ln_final.weight": weights["ln_final.weight"],
+        "lm_head.weight": weights["lm_head.weight"],
+    }
+
+    for layer_idx in range(num_layers):
+        source_prefix = f"layers.{layer_idx}"
+        target_prefix = f"layers.{layer_idx}"
+        state_dict.update(
+            {
+                f"{target_prefix}.attn.q_proj.weight": weights[f"{source_prefix}.attn.q_proj.weight"],
+                f"{target_prefix}.attn.k_proj.weight": weights[f"{source_prefix}.attn.k_proj.weight"],
+                f"{target_prefix}.attn.v_proj.weight": weights[f"{source_prefix}.attn.v_proj.weight"],
+                f"{target_prefix}.attn.o_proj.weight": weights[f"{source_prefix}.attn.output_proj.weight"],
+                f"{target_prefix}.ln1.weight": weights[f"{source_prefix}.ln1.weight"],
+                f"{target_prefix}.ffn.w1.weight": weights[f"{source_prefix}.ffn.w1.weight"],
+                f"{target_prefix}.ffn.w2.weight": weights[f"{source_prefix}.ffn.w2.weight"],
+                f"{target_prefix}.ffn.w3.weight": weights[f"{source_prefix}.ffn.w3.weight"],
+                f"{target_prefix}.ln2.weight": weights[f"{source_prefix}.ln2.weight"],
+            }
+        )
+
+    model.load_state_dict(state_dict)
+    return model(in_indices)
 
 
 def run_rmsnorm(
@@ -526,7 +590,9 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
-    raise NotImplementedError
+    from cs336_basics.modules import cross_entropy
+
+    return cross_entropy(inputs, targets)
 
 
 def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
