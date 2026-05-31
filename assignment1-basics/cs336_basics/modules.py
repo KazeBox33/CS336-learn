@@ -140,6 +140,8 @@ class MultiHeadSelfAttention(nn.Module):
             self,
             d_model:int,
             num_heads:int,
+            max_seq_len:int|None =None,
+            theta:float|None=None,
             device:torch.device|None=None,
             dtype: torch.dtype| None=None,
     ): 
@@ -156,7 +158,17 @@ class MultiHeadSelfAttention(nn.Module):
         self.v_proj=Linear(d_model,d_model,device=device,dtype=dtype)
         self.o_proj=Linear(d_model,d_model,device=device,dtype=dtype)
 
-    def forward(self,x:torch.Tensor) ->torch.Tensor:
+        if theta is not None and max_seq_len is not None:
+            self.rope=RotaryPositionalEmbedding(
+                theta=theta,
+                d_k=self.d_head,
+                max_seq_len=max_seq_len,
+                device=device
+            )
+        else:
+            self.rope=None
+
+    def forward(self,x:torch.Tensor,token_positions:torch.Tensor|None=None) ->torch.Tensor:
         *batch_dims,sequence_length,_=x.shape
         
         q=self.q_proj(x)
@@ -171,6 +183,12 @@ class MultiHeadSelfAttention(nn.Module):
         k=k.transpose(-3,-2)
         v=v.transpose(-3,-2)
 
+        if self.rope is not None:
+            if token_positions is None:
+                token_positions=torch.arange(sequence_length,device=x.device)
+            q=self.rope(q,token_positions)
+            k=self.rope(k,token_positions)
+
         mask=torch.tril(
             torch.ones(sequence_length,sequence_length,device=x.device,dtype=torch.bool)
         )
@@ -182,3 +200,54 @@ class MultiHeadSelfAttention(nn.Module):
         #contiguous() 是因为 transpose 后 tensor 的内存布局可能不是连续的，直接 view 可能报错。所以先让它变成连续内存。
 
         return self.o_proj(attn_output)
+
+
+
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(
+            self,
+            theta:float,
+            d_k:int, # d_k表示的是维度
+            max_seq_len:int,
+            device:torch.device|None =None,
+    ):
+        super().__init__()
+
+        assert d_k %2 ==0 # Rope需要两两作为一组维度
+
+        self.theta =theta
+        self.d_k=d_k
+        self.max_seq_len=max_seq_len
+
+        dim_indices=torch.arange(0,d_k,2,device=device).float() 
+        inv_freq=1.0/(theta**(dim_indices/d_k))  # 算频率
+
+        position=torch.arange(max_seq_len,device=device).float()
+        angles=torch.outer(position,inv_freq) #外积
+
+        self.register_buffer("cos",torch.cos(angles),persistent=False)
+        self.register_buffer("sin",torch.sin(angles),persistent=False)
+
+    def forward(self,x:torch.Tensor,token_positions: torch.Tensor) -> torch.Tensor:
+        cos=self.cos[token_positions]
+        sin=self.sin[token_positions]
+
+        x_even=x[...,0::2]
+        x_odd=x[...,1::2]
+
+        rotated_even=x_even*cos-x_odd*sin
+        rotated_odd=x_even*sin+x_odd*cos
+
+        result=torch.empty_like(x)
+        result[...,0::2]=rotated_even
+        result[...,1::2]=rotated_odd
+        return result
+    
+def softmax(x:torch.Tensor,dim:int) ->torch.Tensor:
+    x_max=torch.max(x,dim=dim,keepdim=True).values
+    x_shifted=x-x_max
+    exp_x=torch.exp(x_shifted)
+    return exp_x/torch.sum(exp_x,dim=dim,keepdim=True)
+
+
+# 下一部分是Transformer Block
