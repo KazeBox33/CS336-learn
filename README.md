@@ -29,27 +29,35 @@ This repository tracks my self-study of Stanford CS336: Language Modeling from S
 - 已实现 BPE `Tokenizer`，支持 `encode`、`decode`、special token 保留和流式 `encode_iterable`。
 - Passed tokenizer and BPE training tests.
 - 已通过 tokenizer 与 BPE training 相关测试。
+- Implemented core Transformer LM components: `Linear`, `Embedding`, `RMSNorm`, `SwiGLU`, RoPE, causal multi-head self-attention, Transformer block, and Transformer LM.
+- 已实现核心 Transformer LM 组件：`Linear`、`Embedding`、`RMSNorm`、`SwiGLU`、RoPE、因果多头自注意力、Transformer Block 和 Transformer LM。
+- Implemented numerically stable `softmax` and core `cross_entropy` loss.
+- 已实现数值稳定的 `softmax` 和核心版 `cross_entropy` 损失函数。
+- Passed the relevant model architecture and loss tests.
+- 已通过相关模型结构与损失函数测试。
 
 Validation / 验证：
 
 ```bash
 uv run pytest tests/test_train_bpe.py -q
 uv run pytest tests/test_tokenizer.py -q
+uv run pytest tests/test_model.py::test_transformer_lm tests/test_model.py::test_transformer_lm_truncated_input -q
+uv run pytest tests/test_nn_utils.py::test_cross_entropy -q
 ```
 
 ### In Progress / 进行中
 
-- Starting PyTorch model components for A1, beginning with a custom `Linear` module.
-- 正在进入 A1 的 PyTorch 模型组件实现，当前从自定义 `Linear` 层开始。
-- Current focus: understanding `nn.Module`, `nn.Parameter`, weight initialization, and matrix multiplication semantics.
-- 当前重点：理解 `nn.Module`、`nn.Parameter`、权重初始化和矩阵乘法语义。
+- Working through the training section of A1.
+- 正在推进 A1 第四部分训练组件。
+- Current focus: implementing a custom AdamW optimizer while understanding PyTorch optimizer state, parameter groups, and moment estimates.
+- 当前重点：实现自定义 AdamW 优化器，并理解 PyTorch optimizer 的状态字典、参数组和一阶/二阶动量。
 
 ### Next / 下一步
 
-- Finish and test `Linear`.
-- 完成并测试 `Linear` 层。
-- Implement and test `Embedding`, `RMSNorm`, `SwiGLU`, attention, Transformer block, and Transformer LM.
-- 继续实现并测试 `Embedding`、`RMSNorm`、`SwiGLU`、Attention、Transformer Block 和 Transformer LM。
+- Finish `AdamW.step()` and connect the optimizer adapter.
+- 完成 `AdamW.step()` 并接入 optimizer adapter。
+- Implement learning-rate schedule, gradient clipping, data loading, checkpointing, and the training loop.
+- 继续实现学习率调度、梯度裁剪、数据加载、checkpoint 和训练循环。
 - Return to tokenizer experiments when needed: compression ratio, throughput, OpenWebText tokenizer, and token ID serialization.
 - 后续回到 tokenizer 实验：压缩率、吞吐量、OpenWebText tokenizer，以及 token id 序列化。
 
