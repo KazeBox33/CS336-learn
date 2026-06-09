@@ -24,7 +24,7 @@ def train_bpe(
     
     merges=[]
 
-    pretoken_counts=pretokenize_file(input_path,special_tokens,num_processes)
+    pretoken_counts=pretokenize_file(input_path,special_tokens,num_processes) # pretoken_counts的key是 每个被预处理后的词分解后的tuple
     pair_counts, pair_to_pretokens = build_pair_stats(pretoken_counts) # 记录了pair 频次 和  pair 到 pretokens的 路由
 
     while len(vocab) <vocab_size:
