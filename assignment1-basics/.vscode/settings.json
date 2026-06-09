@@ -7,5 +7,18 @@
   "python.languageServer": "Pylance",
   "python.linting.enabled": true,
   "python.linting.pylintEnabled": false,
-  "python.linting.ruffEnabled": true
+  "python.linting.ruffEnabled": true,
+  "editor.quickSuggestions": {
+    "comments": "on",
+    "strings": "on",
+    "other": "on"
+  },
+  "editor.suggestOnTriggerCharacters": true,
+  "editor.inlineSuggest.enabled": false,
+  "editor.suggest.preview": false,
+  "editor.tabCompletion": "on",
+  "python.analysis.autoImportCompletions": true,
+  "github.copilot.enable": {
+    "*": false
+  }
 }

@@ -3,5 +3,14 @@
   "python.terminal.activateEnvironment": true,
   "python.analysis.extraPaths": [
     "${workspaceFolder}/assignment1-basics"
-  ]
+  ],
+  "editor.quickSuggestions": true,
+  "editor.suggestOnTriggerCharacters": true,
+  "editor.inlineSuggest.enabled": false,
+  "editor.suggest.preview": false,
+  "editor.tabCompletion": "on",
+  "python.analysis.autoImportCompletions": true,
+  "github.copilot.enable": {
+    "*": false
+  }
 }

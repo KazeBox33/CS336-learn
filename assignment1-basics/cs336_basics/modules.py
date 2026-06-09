@@ -371,6 +371,7 @@ class TransformerLM(nn.Module):
 
 # 第四部分 反向传播梯度更新
 
+#logits.shape==(3,5) targets.shape==(3,) 假设batch_size=3 vocab_size=5的情况下
 def cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor: #loss = -log(softmax(logits)[target])   可以化简成 loss = log(sum(exp(logits))) - logits[target]
     log_normalizer = torch.logsumexp(logits, dim=-1)
     target_logits = torch.gather(
