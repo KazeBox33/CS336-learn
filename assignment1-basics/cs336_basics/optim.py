@@ -89,3 +89,15 @@ def gradient_clipping(
         max_l2_norm:float,
 )->None:
     grads=[p.grad for p in parameters if p.grad is not None]
+
+    if not grads:
+        return
+    
+    total_norm=torch.sqrt(sum(torch.sum(grad*grad) for grad in grads)) #假设有三个grad ，这里等价于 sqrt(grad_1 所有元素平方和 + grad_2 所有元素平方和 + grad_3 所有元素平方和)
+
+    #把所有参数的梯度摊平成一个超长向量后，这个向量的 L2 norm
+
+    if total_norm > max_l2_norm:
+        scale=max_l2_norm/(total_norm+1e-6)
+        for grad in grads:
+            grad.mul_(scale)

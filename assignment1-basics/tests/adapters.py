@@ -8,6 +8,7 @@ import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+from torch.autograd import grad
 
 from cs336_basics.bpe import train_bpe
 
@@ -606,7 +607,9 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    from cs336_basics.optim import gradient_clipping
+
+    return gradient_clipping(parameters,max_l2_norm)
 
 
 def get_adamw_cls() -> Any:
