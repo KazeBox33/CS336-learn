@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import torch
+import math
+
 
 class AdamW(torch.optim.Optimizer):
     def __init__(
@@ -61,3 +63,23 @@ class AdamW(torch.optim.Optimizer):
                 p.data.add_(update,alpha=-lr)
 
         return loss
+    
+
+
+def get_lr_cosine_schedule(
+        it:int,
+        max_learning_rate:float,
+        min_learning_rate:float,
+        warmup_iters:int,
+        cosine_cycle_iters:int,
+)->float:
+    # 分三个阶段，1 warmup 2 cosine decay 从2. cosine decay: 从 max_learning_rate 按余弦曲线降到 min_learning_rate
+    # 3. after decay: 保持 min_learning_rate
+    if it < warmup_iters:
+        return max_learning_rate*it/warmup_iters
+    
+    if it <=cosine_cycle_iters:
+        progress=(it-warmup_iters)/(cosine_cycle_iters-warmup_iters)
+        return min_learning_rate+0.5*(max_learning_rate-min_learning_rate)*(1+math.cos(progress*math.pi))
+    
+    return min_learning_rate

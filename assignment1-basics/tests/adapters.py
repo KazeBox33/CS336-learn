@@ -555,7 +555,9 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    from cs336_basics.data import get_batch
+
+    return get_batch(dataset,batch_size,context_length,device)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -641,7 +643,15 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    from cs336_basics.optim import get_lr_cosine_schedule
+
+    return get_lr_cosine_schedule(
+        it,
+        max_learning_rate,
+        min_learning_rate,
+        warmup_iters,
+        cosine_cycle_iters
+    )
 
 
 def run_save_checkpoint(
