@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import torch
 
+from cs336_basics.modules import TransformerLM
+from cs336_basics.tokenizer import Tokenizer
+
+
 def sample_from_logits(
         logits:torch.Tensor,
         temperature:float=1.0,
-        top_p:float|None=None, #表示可以不采用 top-k采样 
+        top_p:float|None=None, #表示可以不采用 top-p 采样
 ) -> int:
     if temperature==0:  #直接选最大概率token
         return int(torch.argmax(logits).item()) #直接取里面的最大值
@@ -26,3 +30,37 @@ def sample_from_logits(
     return int(next_token.item())
         
         
+@torch.no_grad()
+def generate(
+    model:TransformerLM,
+    tokenizer:Tokenizer,
+    prompt:str,
+    max_new_tokens:int,
+    temperature:float=1.0,
+    top_p:float|None=None,
+    device:str|torch.device="cpu",
+    end_token:str="<|endoftext|>",
+)-> str:
+    token_ids=tokenizer.encode(prompt)
+    end_token_id=tokenizer.token_to_id[end_token.encode("utf-8")]
+
+    was_training=model.training
+    model.eval()
+
+    for _ in range(max_new_tokens):
+        input_ids=token_ids[-model.context_length:]
+        x=torch.tensor(input_ids,dtype=torch.long,device=device).unsqueeze(0) #需要保持维度为(batch_size,sequence)
+
+        logits=model(x)
+        next_logits=logits[0,-1]  #只需要最后一个位置的
+        
+        next_token_id=sample_from_logits(next_logits,temperature,top_p) 
+        token_ids.append(next_token_id)
+
+        if next_token_id ==end_token_id:
+            break
+
+    if was_training:
+        model.train()
+
+    return tokenizer.decode(token_ids)
