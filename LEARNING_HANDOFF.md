@@ -4,6 +4,84 @@ This document records the current learning state, project progress, and preferre
 
 本文档用于在其他电脑或新的对话中继续 CS336 A1 项目时快速交接：包括当前项目进度、学习者知识储备、教学方式偏好和下一步任务。
 
+## Latest Status 2026-06-11
+
+Current active phase:
+
+- Assignment 1 experiments pipeline after core implementation.
+- TinyStories raw text has been downloaded locally under `data/`.
+- TinyStories BPE tokenizer has been trained with vocab size 10,000 and `<|endoftext|>`.
+- Tokenizer artifacts are under `outputs/tinystories_bpe/`:
+  - `vocab.pkl`
+  - `merges.pkl`
+  - `metrics.json`
+  - `profile.txt`
+- `scripts/tokenize_tinystories.py` has been added to stream-tokenize TinyStories text into `.npy` token arrays using `Tokenizer.encode_iterable(...)` and `array("H")` / `np.uint16`.
+- `data/` and `outputs/` are ignored by git because they contain large generated/downloaded artifacts.
+
+Immediate next step:
+
+1. Run TinyStories tokenization:
+
+```bash
+cd /Users/xiedongjin/Workspace/learning/CS336-learn/assignment1-basics
+
+uv run python scripts/tokenize_tinystories.py \
+  --input-path ../data/TinyStoriesV2-GPT4-train.txt \
+  --vocab-path ../outputs/tinystories_bpe/vocab.pkl \
+  --merges-path ../outputs/tinystories_bpe/merges.pkl \
+  --output-path ../data/tinystories_train_tokens.npy
+
+uv run python scripts/tokenize_tinystories.py \
+  --input-path ../data/TinyStoriesV2-GPT4-valid.txt \
+  --vocab-path ../outputs/tinystories_bpe/vocab.pkl \
+  --merges-path ../outputs/tinystories_bpe/merges.pkl \
+  --output-path ../data/tinystories_valid_tokens.npy
+```
+
+After tokenization:
+
+- Verify `.npy` files with `np.load(..., mmap_mode="r")`.
+- Do a single-minibatch overfit sanity check before long training.
+- Then run TinyStories low-resource training on Mac:
+  - `vocab_size=10000`
+  - `context_length=256`
+  - `d_model=512`
+  - `d_ff=1344`
+  - `num_layers=4`
+  - `num_heads=16`
+  - `rope_theta=10000`
+  - target low-resource token budget around `32 * 5000 * 256 = 40,960,000` tokens.
+
+Experiment roadmap to remember:
+
+1. TinyStories tokenizer training report:
+   - elapsed time
+   - memory
+   - longest token
+   - profiling bottleneck
+2. TinyStories data tokenization into `.npy`.
+3. Single minibatch overfit sanity check.
+4. TinyStories base training run with experiment logging.
+5. Learning-rate sweep, including at least one divergent run.
+6. Batch-size experiment.
+7. Generate at least 256 tokens from TinyStories checkpoint and comment on fluency.
+8. Ablations:
+   - remove RMSNorm
+   - post-norm Transformer
+   - NoPE
+   - SwiGLU vs SiLU
+9. OpenWebText:
+   - download OWT sample
+   - train OWT BPE tokenizer with vocab size 32,000
+   - tokenize OWT
+   - train same architecture/iterations as TinyStories
+   - generate OWT text and compare losses/fluency
+10. Optional leaderboard:
+   - H100 1.5-hour limit
+   - OpenWebText training data only
+   - target validation loss below naive baseline 5.0.
+
 ## Current Project State
 
 Repository:
