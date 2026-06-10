@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+
 from typing import BinaryIO,IO
 
 import torch
@@ -17,3 +18,16 @@ def save_checkpoint(
         "optimizer":optimizer.state_dict(),
         "iteration":iteration
     }
+
+    torch.save(checkpoint,out)
+
+
+def load_checkpoint(
+        src:str|os.PathLike|BinaryIO|IO[bytes],
+        model:torch.nn.Module,
+        optimizer:torch.optim.Optimizer,
+)-> int:
+    checkpoint=torch.load(src)
+    model.load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    return checkpoint["iteration"]
