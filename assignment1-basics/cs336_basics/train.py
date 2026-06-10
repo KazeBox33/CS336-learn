@@ -12,6 +12,7 @@ from cs336_basics.checkpoint import save_checkpoint
 from cs336_basics.data import get_batch
 from cs336_basics.modules import TransformerLM,cross_entropy
 from cs336_basics.optim import AdamW,get_lr_cosine_schedule,gradient_clipping
+from cs336_basics.experiment import ExperimentLogger
 
 @dataclass
 class  TrainConfig:
@@ -44,6 +45,7 @@ class  TrainConfig:
     max_l2_norm:float
 
     device:str="cpu"
+    log_path: str|None=None
     
 
 def load_token_data(path:str) ->np.ndarray:
@@ -126,6 +128,8 @@ def train(config:TrainConfig)-> None:
     model=build_model(config)
     optimizer=build_optimizer(model,config)
 
+    logger=ExperimentLogger(config.log_path) if config.log_path is not None else None
+
     checkpoint_path=Path(config.checkpoint_path)
     checkpoint_path.parent.mkdir(parents=True,exist_ok=True)
 
@@ -165,6 +169,16 @@ def train(config:TrainConfig)-> None:
                 f"valid loss {valid_loss:.4f}, "
                 f"lr {lr:.6e}"
             )
+
+            if logger is not None :
+                logger.log(
+                    {
+                        "step": it,
+                        "train_loss": train_loss,
+                        "valid_loss": valid_loss,
+                        "lr": lr,
+                    }
+                )
 
         if it>0 and it%config.save_interval==0:
             save_checkpoint(model,optimizer,it,checkpoint_path)
