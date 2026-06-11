@@ -20,9 +20,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-interval", type=int, default=500)
 
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--min-lr", type=float, default=None)
     parser.add_argument("--min-lr-ratio", type=float, default=0.1)
     parser.add_argument("--warmup-iters", type=int, default=None)
     parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--beta1", type=float, default=0.9)
+    parser.add_argument("--beta2", type=float, default=0.95)
+    parser.add_argument("--eps", type=float, default=1e-8)
+    parser.add_argument("--max-l2-norm", type=float, default=1.0)
+    parser.add_argument("--model-name", default="owt_transformer")
+    parser.add_argument("--seed", type=int, default=2025)
+    parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
 
@@ -31,6 +39,7 @@ def main() -> None:
     warmup_iters = args.warmup_iters
     if warmup_iters is None:
         warmup_iters = max(1, args.max_iters // 100)
+    min_lr = args.min_lr if args.min_lr is not None else args.lr * args.min_lr_ratio
 
     output_dir = args.output_dir
     config = TrainConfig(
@@ -50,15 +59,18 @@ def main() -> None:
         eval_iters=args.eval_iters,
         save_interval=args.save_interval,
         max_learning_rate=args.lr,
-        min_learning_rate=args.lr * args.min_lr_ratio,
+        min_learning_rate=min_lr,
         warmup_iters=warmup_iters,
         cosine_cycle_iters=args.max_iters,
         weight_decay=args.weight_decay,
-        betas=(0.9, 0.95),
-        eps=1e-8,
-        max_l2_norm=1.0,
+        betas=(args.beta1, args.beta2),
+        eps=args.eps,
+        max_l2_norm=args.max_l2_norm,
         device=args.device,
         log_path=str(output_dir / "train_log.jsonl"),
+        model_name=args.model_name,
+        seed=args.seed,
+        dry_run=args.dry_run,
     )
 
     train(config)

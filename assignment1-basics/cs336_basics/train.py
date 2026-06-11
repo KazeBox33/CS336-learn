@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -46,6 +47,9 @@ class  TrainConfig:
 
     device:str="cpu"
     log_path: str|None=None
+    model_name:str="transformer_lm"
+    seed:int=2025
+    dry_run:bool=False
     
 
 def load_token_data(path:str) ->np.ndarray:
@@ -63,6 +67,108 @@ def build_model(config: TrainConfig) ->TransformerLM:
         device=torch.device(config.device)
     )
     return model
+
+
+def count_parameters(model:torch.nn.Module) -> int:
+    return sum(parameter.numel() for parameter in model.parameters())
+
+
+def count_non_embedding_parameters(model:torch.nn.Module) -> int:
+    return sum(
+        parameter.numel()
+        for name, parameter in model.named_parameters()
+        if "token_embedding" not in name and "embedding" not in name
+    )
+
+
+def format_int(value:int) -> str:
+    return f"{value:_}"
+
+
+def format_training_config(
+    config: TrainConfig,
+    model: torch.nn.Module,
+    train_tokens: int,
+    valid_tokens: int,
+) -> str:
+    tokens_per_step=config.batch_size * config.context_length
+    total_train_tokens=tokens_per_step * config.max_iters
+    approx_epochs=total_train_tokens / train_tokens if train_tokens > 0 else 0.0
+    total_params=count_parameters(model)
+    non_embedding_params=count_non_embedding_parameters(model)
+
+    return f"""@dataclass
+class ModelConfig:
+    model_name: str = "{config.model_name}"
+    vocab_size: int = {format_int(config.vocab_size)}
+    context_length: int = {format_int(config.context_length)}
+    d_model: int = {format_int(config.d_model)}
+    num_layers: int = {format_int(config.num_layers)}
+    num_heads: int = {format_int(config.num_heads)}
+    d_ff: int = {format_int(config.d_ff)}
+    rope_theta: float = {config.rope_theta:g}
+    total_parameters: int = {format_int(total_params)}
+    non_embedding_parameters: int = {format_int(non_embedding_params)}
+
+
+@dataclass
+class TrainingConfig:
+    batch_size: int = {format_int(config.batch_size)}
+    max_iters: int = {format_int(config.max_iters)}
+    tokens_per_step: int = {format_int(tokens_per_step)}
+    total_tokens_processed: int = {format_int(total_train_tokens)}
+    approx_epochs: float = {approx_epochs:.4f}
+    train_tokens: int = {format_int(train_tokens)}
+    valid_tokens: int = {format_int(valid_tokens)}
+    train_data_path: str = "{config.train_data_path}"
+    valid_data_path: str = "{config.valid_data_path}"
+
+    # Optimizer related parameters
+    betas: tuple = {config.betas}
+    weight_decay: float = {config.weight_decay:g}
+    max_lr: float = {config.max_learning_rate:g}
+    min_lr: float = {config.min_learning_rate:g}
+    warmup_iters: int = {format_int(config.warmup_iters)}
+    cosine_cycle_iters: int = {format_int(config.cosine_cycle_iters)}
+    eps: float = {config.eps:g}
+    max_grad_norm: float = {config.max_l2_norm:g}
+
+    # Logging & checkpointing
+    eval_interval: int = {format_int(config.eval_interval)}
+    eval_iters: int = {format_int(config.eval_iters)}
+    save_interval: int = {format_int(config.save_interval)}
+    checkpoint_path: str = "{config.checkpoint_path}"
+    log_path: str = "{config.log_path}"
+
+    # Others
+    device: str = "{config.device}"
+    seed: int = {config.seed}
+    dry_run: bool = {config.dry_run}
+"""
+
+
+def write_training_config(
+    config: TrainConfig,
+    model: torch.nn.Module,
+    train_tokens: int,
+    valid_tokens: int,
+    output_dir: Path,
+) -> None:
+    output_dir.mkdir(parents=True,exist_ok=True)
+    config_text=format_training_config(config,model,train_tokens,valid_tokens)
+    print("\nConfiguration\n")
+    print(config_text)
+    (output_dir / "config.txt").write_text(config_text,encoding="utf-8")
+
+    payload=asdict(config)
+    payload["tokens_per_step"]=config.batch_size * config.context_length
+    payload["total_tokens_processed"]=payload["tokens_per_step"] * config.max_iters
+    payload["train_tokens"]=int(train_tokens)
+    payload["valid_tokens"]=int(valid_tokens)
+    payload["approx_epochs"]=payload["total_tokens_processed"] / train_tokens if train_tokens > 0 else 0.0
+    payload["total_parameters"]=count_parameters(model)
+    payload["non_embedding_parameters"]=count_non_embedding_parameters(model)
+    (output_dir / "config.json").write_text(json.dumps(payload,indent=2),encoding="utf-8")
 
 def build_optimizer(model:torch.nn.Module, config:TrainConfig)-> AdamW:
     return AdamW(
@@ -122,6 +228,11 @@ def set_learning_rate(optimizer:torch.optim.Optimizer,lr :float) -> None:
 
 
 def train(config:TrainConfig)-> None:
+    torch.manual_seed(config.seed)
+    np.random.seed(config.seed)
+    if torch.cuda.is_available() and config.device.startswith("cuda"):
+        torch.cuda.manual_seed_all(config.seed)
+
     train_data=load_token_data(config.train_data_path)
     valid_data=load_token_data(config.valid_data_path)
 
@@ -132,6 +243,16 @@ def train(config:TrainConfig)-> None:
 
     checkpoint_path=Path(config.checkpoint_path)
     checkpoint_path.parent.mkdir(parents=True,exist_ok=True)
+    write_training_config(
+        config,
+        model,
+        train_tokens=len(train_data),
+        valid_tokens=len(valid_data),
+        output_dir=checkpoint_path.parent,
+    )
+    if config.dry_run:
+        print("Dry run enabled: configuration was written, training will not start.")
+        return
 
     model.train()
 
