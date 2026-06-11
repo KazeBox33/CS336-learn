@@ -66,6 +66,7 @@ def train_bpe(
         vocab[len(vocab)]=best_pair[0]+best_pair[1]
 
         affected_pretokens=list(pair_to_pretokens[best_pair])
+        changed_pairs=set()
 
         for old_pretoken in affected_pretokens:
             if old_pretoken not in pretoken_counts:
@@ -77,8 +78,7 @@ def train_bpe(
                 pair_counts[old_pair] -= freq #pair 频率中删除 old_pretoken 的pair
                 if pair_counts[old_pair] <= 0: 
                     del pair_counts[old_pair]
-                else:
-                    push_pair(pair_heap,pair_counts,old_pair)
+                changed_pairs.add(old_pair)
                 pair_to_pretokens[old_pair].discard(old_pretoken) #删除 old_pair 到 old_pretoken的路径
                 # 下面是把新的加进去
             new_pretoken=merge_one_pretoken(old_pretoken,best_pair)
@@ -87,7 +87,10 @@ def train_bpe(
             for new_pair in iter_pairs(new_pretoken):
                 pair_counts[new_pair] +=freq
                 pair_to_pretokens[new_pair].add(new_pretoken)
-                push_pair(pair_heap,pair_counts,new_pair)
+                changed_pairs.add(new_pair)
+        
+        for pair in changed_pairs:
+            push_pair(pair_heap,pair_counts,pair)
   
 
     return vocab,merges
