@@ -22,6 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vocab-path", type=Path, default=Path("../outputs/owt_bpe/vocab.pkl"))
     parser.add_argument("--merges-path", type=Path, default=Path("../outputs/owt_bpe/merges.pkl"))
     parser.add_argument("--output-path", type=Path, required=True)
+    parser.add_argument("--cache-size", type=int, default=1_000_000)
+    parser.add_argument("--progress-interval", type=int, default=100_000)
     return parser.parse_args()
 
 
@@ -31,12 +33,19 @@ def main() -> None:
 
     vocab = load_pickle(args.vocab_path)
     merges = load_pickle(args.merges_path)
-    tokenizer = Tokenizer(vocab, merges, special_tokens=["<|endoftext|>"])
+    tokenizer = Tokenizer(vocab, merges, special_tokens=["<|endoftext|>"], cache_size=args.cache_size)
 
     token_ids = array("H")
     with args.input_path.open("r", encoding="utf-8") as file:
-        for token_id in tokenizer.encode_iterable(file):
-            token_ids.append(token_id)
+        for line_number, line in enumerate(file, start=1):
+            token_ids.extend(tokenizer.encode(line))
+            if line_number % args.progress_interval == 0:
+                elapsed_seconds = perf_counter() - start
+                print(
+                    f"lines {line_number:,}: {len(token_ids):,} tokens "
+                    f"in {elapsed_seconds:.2f} seconds",
+                    flush=True,
+                )
 
     tokens = np.frombuffer(token_ids, dtype=np.uint16)
     args.output_path.parent.mkdir(parents=True, exist_ok=True)

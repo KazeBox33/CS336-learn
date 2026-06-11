@@ -1,24 +1,32 @@
 from __future__ import annotations
 import regex as re
 from collections.abc import Iterable, Iterator
+from functools import lru_cache
 
 
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+PATTERN = re.compile(PAT)
 
 class Tokenizer:
     def __init__(
             self,
             vocab:dict[int,bytes],
             merges:list[tuple[bytes,bytes]],
-            special_tokens:list[str]|None=None
+            special_tokens:list[str]|None=None,
+            cache_size:int=0,
     ):
         self.vocab=vocab
         self.merges=merges
         self.special_tokens=special_tokens or []
+        self.byte_tokens=tuple(bytes([byte]) for byte in range(256))
 
         self.token_to_id={token:token_id for token_id , token in vocab.items()} #词表对应的是 token 到 token_id 的映射
         self.merge_ranks={pair:rank for rank, pair in enumerate(merges)}  # pair 对应 下标 , 把merge转换成一个快速查询表   融合的顺序也要遵照原本的训练时候的融合顺序
+        if cache_size > 0:
+            self._encode_pretoken_cached = lru_cache(maxsize=cache_size)(self._encode_pretoken_uncached)
+        else:
+            self._encode_pretoken_cached = self._encode_pretoken_uncached
 
         if self.special_tokens:
             self.special_tokens=sorted(self.special_tokens,key=len,reverse=True) #从大到小排序 reverse=true 就说明从大到小排序
@@ -28,18 +36,17 @@ class Tokenizer:
 
     
     def encode(self,text:str) -> list[int]:
-        ids=[]
-
+        return list(self._encode_text_iter(text))
+    
+    def _encode_text_iter(self,text:str) -> Iterator[int]:
         for piece, is_special in self._split_on_special_tokens(text):
             if is_special:
-                ids.append(self.token_to_id[piece.encode("utf-8")])
+                yield self.token_to_id[piece.encode("utf-8")]
                 continue
 
-            for match in re.finditer(PAT,piece):
+            for match in PATTERN.finditer(piece):
                 pretoken=match.group().encode("utf-8")
-                ids.extend(self._encode_pretoken(pretoken))
-        
-        return ids
+                yield from self._encode_pretoken(pretoken)
 
     def _split_on_special_tokens(self,text:str): # 从文本中把  special token 和 普通的字符串切分出来
         if self.special_pattern is None:
@@ -63,7 +70,10 @@ class Tokenizer:
     
 
     def _encode_pretoken(self,pretoken:bytes) -> list[int]: #处理一个pre-token 应用BPE merges    找出最好的pair
-        tokens=tuple(bytes([byte]) for byte in pretoken)
+        return list(self._encode_pretoken_cached(pretoken))
+    
+    def _encode_pretoken_uncached(self,pretoken:bytes) -> tuple[int,...]:
+        tokens=tuple(self.byte_tokens[byte] for byte in pretoken)
 
         while len(tokens) > 1 :
             best_pair=None
@@ -82,7 +92,7 @@ class Tokenizer:
 
             tokens = self._merge_tokens(tokens, best_pair) # 给 pair 合成到 token 当中
 
-        return [self.token_to_id[token] for token in tokens]
+        return tuple(self.token_to_id[token] for token in tokens)
 
     def _merge_tokens(self,tokens:tuple[bytes, ...],pair_to_merge:tuple[bytes,bytes]) ->tuple[bytes,...]:
         merged_tokens=[]
@@ -100,5 +110,4 @@ class Tokenizer:
     
     def encode_iterable(self,iterable:Iterable[str]) ->Iterator[int]:
         for text in iterable:
-            yield from self.encode(text)  #encode生成的是list ， 这里yield from 直接一个个取出来，更加省内存
-
+            yield from self._encode_text_iter(text)
