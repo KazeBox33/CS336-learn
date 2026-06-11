@@ -33,13 +33,13 @@ def main() -> None:
     merges = load_pickle(args.merges_path)
     tokenizer = Tokenizer(vocab, merges, special_tokens=["<|endoftext|>"])
 
-    token_ids = array("H")
+    token_ids = array("H")  #建立一个紧凑数组，用来保存token id "H"是array的类型码 表示16bit的无符号整数. 比较省内存
     with args.input_path.open("r", encoding="utf-8") as file:
         for token_id in tokenizer.encode_iterable(file):
             token_ids.append(token_id)
 
-    tokens = np.frombuffer(token_ids, dtype=np.uint16)
-    args.output_path.parent.mkdir(parents=True, exist_ok=True)
+    tokens = np.frombuffer(token_ids, dtype=np.uint16) #frombuffer 表示直接复用底层内存，不重新复制一大份数据
+    args.output_path.parent.mkdir(parents=True, exist_ok=True) #确保输出目录存在
     np.save(args.output_path, tokens)
 
     elapsed_seconds = perf_counter() - start
@@ -51,5 +51,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
 

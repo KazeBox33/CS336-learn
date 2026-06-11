@@ -100,5 +100,5 @@ class Tokenizer:
     
     def encode_iterable(self,iterable:Iterable[str]) ->Iterator[int]:
         for text in iterable:
-            yield from self.encode(text)
+            yield from self.encode(text)  #encode生成的是list ， 这里yield from 直接一个个取出来，更加省内存
 
