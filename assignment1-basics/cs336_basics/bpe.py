@@ -1,11 +1,37 @@
 from pathlib import Path
 import os
+import heapq
 import regex as re
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 MIN_PARALLEL_FILE_BYTES = 1_000_000
+
+
+class _MaxPair:
+    __slots__ = ("pair",)
+
+    def __init__(self, pair):
+        self.pair = pair
+
+    def __lt__(self, other):
+        return self.pair > other.pair
+
+
+def push_pair(heap, pair_counts, pair):
+    count = pair_counts.get(pair, 0)
+    if count > 0:
+        heapq.heappush(heap, (-count, _MaxPair(pair), pair))
+
+
+def pop_best_pair(heap, pair_counts):
+    while heap:
+        neg_count, _, pair = heapq.heappop(heap)
+        count = -neg_count
+        if pair_counts.get(pair, 0) == count:
+            return pair
+    return None
 
 
 def train_bpe(
@@ -26,11 +52,16 @@ def train_bpe(
 
     pretoken_counts=pretokenize_file(input_path,special_tokens,num_processes) # pretoken_counts的key是 每个被预处理后的词分解后的tuple
     pair_counts, pair_to_pretokens = build_pair_stats(pretoken_counts) # 记录了pair 频次 和  pair 到 pretokens的 路由
+    pair_heap=[]
+    for pair in pair_counts:
+        push_pair(pair_heap,pair_counts,pair)
 
     while len(vocab) <vocab_size:
         if not pair_counts:
             break
-        best_pair=max(pair_counts,key=lambda pair:(pair_counts[pair],pair))
+        best_pair=pop_best_pair(pair_heap,pair_counts)
+        if best_pair is None:
+            break
         merges.append(best_pair)
         vocab[len(vocab)]=best_pair[0]+best_pair[1]
 
@@ -46,6 +77,8 @@ def train_bpe(
                 pair_counts[old_pair] -= freq #pair 频率中删除 old_pretoken 的pair
                 if pair_counts[old_pair] <= 0: 
                     del pair_counts[old_pair]
+                else:
+                    push_pair(pair_heap,pair_counts,old_pair)
                 pair_to_pretokens[old_pair].discard(old_pretoken) #删除 old_pair 到 old_pretoken的路径
                 # 下面是把新的加进去
             new_pretoken=merge_one_pretoken(old_pretoken,best_pair)
@@ -54,6 +87,7 @@ def train_bpe(
             for new_pair in iter_pairs(new_pretoken):
                 pair_counts[new_pair] +=freq
                 pair_to_pretokens[new_pair].add(new_pretoken)
+                push_pair(pair_heap,pair_counts,new_pair)
   
 
     return vocab,merges
