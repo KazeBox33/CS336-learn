@@ -45,7 +45,7 @@ Throughput is approximate because the logged wall-clock time includes evaluation
 | OWT smoke | done | `owt_lm_smoke` | 256 | 4L, d=512, h=16, d_ff=1344 | 45.2M | 32 | 20 | 8,192 | 0.16M | 15 | 9.1575 | 9.1818 | 20 | 1.5 sec | smoke only | n/a |
 | OWT 5k baseline | done | `owt_lm` | 256 | 4L, d=512, h=16, d_ff=1344 | 45.2M | 32 | 5,000 | 8,192 | 40.96M | 4,900 | 5.0261 | 5.0473 | 5,000 | 314.8 sec | about 130k tok/s | about 9 GB observed |
 | OWT 20k baseline | done | `owt_lm_pdf_baseline` | 256 | 4L, d=512, h=16, d_ff=1344 | 45.2M | 64 | 20,000 | 16,384 | 327.68M | 19,500 | 4.2312 | 4.2442 | 20,000 | 37.6 min | about 142k tok/s | about 9 GB observed |
-| OWT 512ctx 6layer | in progress | `owt_lm_512ctx_6layer` | 512 | 6L, d=768, h=12, d_ff=2048 | 91.6M | 32 | 50,000 | 16,384 | 819.20M target | 43,500 | 3.7078 | 3.7111 | 42,000 | 176.7 min at step 43,500 | about 67k tok/s | 22.5 GB |
+| OWT 512ctx 6layer | done | `owt_lm_512ctx_6layer` | 512 | 6L, d=768, h=12, d_ff=2048 | 91.6M | 32 | 50,000 | 16,384 | 819.20M | 49,500 | 3.6937 | 3.6905 | 50,000 | about 201.1 min at step 49,500 | about 67k tok/s | 22.5 GB |
 
 Notes:
 
@@ -228,19 +228,19 @@ total parameters = 91,629,312
 about 91.6M parameters
 ```
 
-Current result as of 2026-06-12 16:26 CST:
+Final result as of 2026-06-12 16:54 CST:
 
 ```text
-status = running
-latest eval step = 43,500
-train loss = 3.7078
-valid loss = 3.7111
-checkpoint iteration = 42,000
-runtime at latest eval = 10,603.5 seconds = about 176.7 minutes
+status = done
+latest eval step = 49,500
+train loss = 3.6937
+valid loss = 3.6905
+checkpoint iteration = 50,000
+runtime at latest eval = 12,066.3 seconds = about 201.1 minutes
 GPU = RTX 5090 32GB
 GPU memory = about 22.5GB / 32GB
 GPU utilization = 99%
-approx throughput = 43,500 * 16,384 / 10,603.5 = about 67k tokens/s
+approx throughput = 49,500 * 16,384 / 12,066.3 = about 67k tokens/s
 ```
 
 Change from 20k baseline:
@@ -254,6 +254,7 @@ batch_size: 64 -> 32
 tokens_per_step: unchanged at 16,384
 target tokens seen: 327.68M -> 819.20M
 valid loss so far: 4.2442 -> 3.7111
+final valid loss: 4.2442 -> 3.6905
 throughput: about 145k tok/s -> about 67k tok/s
 GPU memory: about 9GB -> about 22.5GB
 ```
@@ -262,6 +263,7 @@ Takeaway:
 
 - Quality improved significantly, but training throughput dropped because the model is larger and the sequence length is longer.
 - This run is not just "more steps"; it primarily tests a stronger context/model configuration.
+- The final validation loss improved by about 0.55 compared with the 20k 256-context baseline.
 - After this run finishes, the next efficient improvements to test should be recorded before code changes:
   - bf16 autocast.
   - weight tying.

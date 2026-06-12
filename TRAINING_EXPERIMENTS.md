@@ -39,6 +39,7 @@ Rule of thumb:
 | TinyStories baseline | TinyStories | Apple Silicon MPS | 10,000 | 256 | 4L, d=512, h=16, d_ff=1344 | 32 | 5,000 | 40.96M | 4,900 | 1.8958 | 1.8751 | 5,000 | about 53.6 min |
 | OWT short baseline | OpenWebText | RTX 5090 32GB | 32,000 | 256 | 4L, d=512, h=16, d_ff=1344 | 32 | 5,000 | 40.96M | 4,900 | 5.0261 | 5.0473 | 5,000 | about 5.2 min |
 | OWT 20k baseline | OpenWebText | RTX 5090 32GB | 32,000 | 256 | 4L, d=512, h=16, d_ff=1344 | 64 | 20,000 | 327.68M | 19,500 | 4.2312 | 4.2442 | 20,000 | about 37.6 min |
+| OWT 512ctx 6layer | OpenWebText | RTX 5090 32GB | 32,000 | 512 | 6L, d=768, h=12, d_ff=2048 | 32 | 50,000 | 819.20M | 49,500 | 3.6937 | 3.6905 | 50,000 | about 201.1 min at step 49,500 |
 
 Notes:
 
