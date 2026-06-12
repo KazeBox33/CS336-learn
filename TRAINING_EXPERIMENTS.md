@@ -2,6 +2,36 @@
 
 This file records model-training runs so we can compare future experiments by configuration and final validation loss.
 
+## Experiment Protocol
+
+Before changing any training configuration or efficiency-related implementation, record the current baseline in this file.
+
+Each change should include:
+
+- Run name and git commit.
+- Exact model config: vocab size, context length, layer count, `d_model`, heads, `d_ff`, tying/mixed precision/compile settings if used.
+- Exact training config: batch size, steps, tokens per step, optimizer, LR schedule, weight decay, gradient clipping.
+- Hardware: GPU model, VRAM, CPU/memory if relevant.
+- Efficiency metrics before the change:
+  - tokens per step.
+  - wall-clock seconds per eval interval or per 1k steps.
+  - estimated tokens/second.
+  - peak/typical GPU memory.
+  - GPU utilization.
+- Quality metrics before the change:
+  - latest train loss.
+  - latest valid loss.
+  - latest logged step.
+  - checkpoint iteration.
+- The single intended change, or at most two tightly related changes.
+- Result after the change using the same metrics, so we can compare effect instead of relying on memory.
+
+Rule of thumb:
+
+- Do not change steps, model size, optimizer, mixed precision, and batch size all at once.
+- Prefer one-factor or two-factor ablations so the result is interpretable.
+- If a long run is already in progress, let it finish and record it before starting a new experiment.
+
 ## Summary Table
 
 | Run | Dataset | Device | Vocab | Context | Model | Batch | Steps | Tokens Seen | Last Eval Step | Train Loss | Valid Loss | Checkpoint Iter | Runtime |
