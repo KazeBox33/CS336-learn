@@ -9,7 +9,7 @@ from cs336_basics.train import TrainConfig as RuntimeTrainConfig, train
 
 @dataclass
 class ModelConfig:
-    model_name: str = "owt_transformer_512ctx_6layer_bf16_tied"
+    model_name: str = "owt_transformer_512ctx_6layer_bf16"
     vocab_size: int = 32_000
     context_length: int = 512
     d_model: int = 768
@@ -21,11 +21,11 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
-    batch_size: int = 64
+    batch_size: int = 48
     num_steps: int = 50_000
     train_data_path: str = "/root/autodl-tmp/cs336/data/owt_train_tokens.npy"
     valid_data_path: str = "/root/autodl-tmp/cs336/data/owt_valid_tokens.npy"
-    save_checkpoint_dir: str = "/root/autodl-tmp/cs336/outputs/owt_lm_512ctx_fast_bf16_tied_bs64"
+    save_checkpoint_dir: str = "/root/autodl-tmp/cs336/outputs/owt_lm_512ctx_fast_bf16_bs48"
 
     # Optimizer related parameters
     betas: tuple[float, float] = (0.9, 0.95)
@@ -38,12 +38,12 @@ class TrainingConfig:
 
     # Efficiency related parameters
     use_bf16: bool = True
-    tie_embeddings: bool = True
+    tie_embeddings: bool = False
     compile_model: bool = False
     matmul_precision: str = "high"
 
     # Logging & checkpointing
-    log_path: str = "/root/autodl-tmp/cs336/outputs/owt_lm_512ctx_fast_bf16_tied_bs64/train_log.jsonl"
+    log_path: str = "/root/autodl-tmp/cs336/outputs/owt_lm_512ctx_fast_bf16_bs48/train_log.jsonl"
     eval_interval: int = 500
     eval_iters: int = 50
     save_interval: int = 2_000
@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-l2-norm", type=float, default=TRAINING_CONFIG.max_grad_norm)
 
     parser.add_argument("--no-bf16", action="store_true")
-    parser.add_argument("--no-tie-embeddings", action="store_true")
+    parser.add_argument("--tie-embeddings", action="store_true")
     parser.add_argument("--compile-model", action="store_true")
     parser.add_argument("--matmul-precision", default=TRAINING_CONFIG.matmul_precision)
     return parser.parse_args()
@@ -121,7 +121,7 @@ def main() -> None:
         device=args.device,
         log_path=str(args.log_path),
         use_bf16=not args.no_bf16,
-        tie_embeddings=not args.no_tie_embeddings,
+        tie_embeddings=args.tie_embeddings,
         compile_model=args.compile_model,
         matmul_precision=args.matmul_precision,
     )
