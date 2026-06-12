@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 
 import numpy as np
@@ -46,10 +48,19 @@ class  TrainConfig:
 
     device:str="cpu"
     log_path: str|None=None
+    use_bf16: bool=False
+    tie_embeddings: bool=False
+    compile_model: bool=False
+    matmul_precision: str|None=None
     
 
 def load_token_data(path:str) ->np.ndarray:
     return np.load(path,mmap_mode="r") #从磁盘加载token id 数据，并且用memory-mapped模式避免一次性读完整个大文件  ,不会一次性把整个文件全部读进RAM,而是在访问某一段时才读取那一段
+
+def autocast_context(config:TrainConfig) -> Any:
+    if config.use_bf16 and config.device.startswith("cuda"):
+        return torch.autocast(device_type="cuda",dtype=torch.bfloat16)
+    return nullcontext()
 
 def build_model(config: TrainConfig) ->TransformerLM:
     model=TransformerLM(
@@ -62,6 +73,8 @@ def build_model(config: TrainConfig) ->TransformerLM:
         rope_theta=config.rope_theta,
         device=torch.device(config.device)
     )
+    if config.tie_embeddings:
+        model.lm_head.weight=model.token_embeddings.weight
     return model
 
 
@@ -94,8 +107,9 @@ def estimate_loss(
             context_length=config.context_length,
             device=config.device,
         )
-        logits=model(x)
-        loss=cross_entropy(logits,y)
+        with autocast_context(config):
+            logits=model(x)
+            loss=cross_entropy(logits.float(),y)
         losses.append(loss.item()) # .item() 是将当前的 损失这个数加入到 losses这个数组当中
 
     if was_training:
@@ -123,10 +137,15 @@ def set_learning_rate(optimizer:torch.optim.Optimizer,lr :float) -> None:
 
 
 def train(config:TrainConfig)-> None:
+    if config.matmul_precision is not None:
+        torch.set_float32_matmul_precision(config.matmul_precision)
+
     train_data=load_token_data(config.train_data_path)
     valid_data=load_token_data(config.valid_data_path)
 
     model=build_model(config)
+    if config.compile_model:
+        model=torch.compile(model)
     optimizer=build_optimizer(model,config)
 
     logger=ExperimentLogger(config.log_path) if config.log_path is not None else None
@@ -154,8 +173,9 @@ def train(config:TrainConfig)-> None:
         )
 
         optimizer.zero_grad()
-        logits=model(x)
-        loss=cross_entropy(logits,y)
+        with autocast_context(config):
+            logits=model(x)
+            loss=cross_entropy(logits.float(),y)
         loss.backward()
         
         gradient_clipping(model.parameters(),config.max_l2_norm)

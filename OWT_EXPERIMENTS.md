@@ -46,6 +46,7 @@ Throughput is approximate because the logged wall-clock time includes evaluation
 | OWT 5k baseline | done | `owt_lm` | 256 | 4L, d=512, h=16, d_ff=1344 | 45.2M | 32 | 5,000 | 8,192 | 40.96M | 4,900 | 5.0261 | 5.0473 | 5,000 | 314.8 sec | about 130k tok/s | about 9 GB observed |
 | OWT 20k baseline | done | `owt_lm_pdf_baseline` | 256 | 4L, d=512, h=16, d_ff=1344 | 45.2M | 64 | 20,000 | 16,384 | 327.68M | 19,500 | 4.2312 | 4.2442 | 20,000 | 37.6 min | about 142k tok/s | about 9 GB observed |
 | OWT 512ctx 6layer | done | `owt_lm_512ctx_6layer` | 512 | 6L, d=768, h=12, d_ff=2048 | 91.6M | 32 | 50,000 | 16,384 | 819.20M | 49,500 | 3.6937 | 3.6905 | 50,000 | about 201.1 min at step 49,500 | about 67k tok/s | 22.5 GB |
+| OWT 512ctx fast bf16 tied bs64 | planned | `owt_lm_512ctx_fast_bf16_tied_bs64` | 512 | 6L, d=768, h=12, d_ff=2048, tied | 67.1M | 64 | 50,000 | 32,768 | 1.64B target | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 
 Notes:
 
@@ -273,6 +274,68 @@ Takeaway:
 ## Next Experiment Candidates
 
 Do not change all of these at once. Record baseline metrics before each change.
+
+## Planned Change: 512ctx 6layer Fast
+
+Baseline before change:
+
+```text
+run = OWT 512ctx 6layer
+status = done
+valid loss = 3.6905
+train loss = 3.6937
+latest eval step = 49,500
+checkpoint iteration = 50,000
+tokens_per_step = 16,384
+approx throughput = 67k tokens/s
+GPU memory = about 22.5GB / 32GB
+precision = fp32
+weight tying = false
+torch.compile = false
+```
+
+Intended change:
+
+```text
+use bf16 autocast
+tie token embedding and lm_head weights
+set torch matmul precision to high
+try batch_size = 64
+keep transformer depth/width/context unchanged
+```
+
+Reason:
+
+- `bf16` should reduce activation memory and improve matrix multiplication throughput on RTX 5090.
+- Weight tying removes one large vocab projection parameter matrix from training state and may improve generalization.
+- Larger batch size should improve tokens/second if bf16 frees enough memory.
+- This is an efficiency-first experiment, not a blind step-count increase.
+
+Planned config:
+
+```python
+vocab_size = 32_000
+context_length = 512
+d_model = 768
+num_layers = 6
+num_heads = 12
+d_ff = 2_048
+tie_embeddings = True
+
+batch_size = 64
+num_steps = 50_000
+tokens_per_step = 32_768
+target_tokens_seen = 1.64B
+use_bf16 = True
+matmul_precision = "high"
+```
+
+Measured parameter count after tying:
+
+```text
+total parameters = 67,053,312
+about 67.1M parameters
+```
 
 1. `bf16` autocast only.
 2. Weight tying only.
