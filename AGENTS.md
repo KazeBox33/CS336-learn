@@ -14,6 +14,7 @@ This repository is used for guided CS336 self-study. Follow these preferences wh
 - Keep real implementations in `cs336_basics/...`; do not put algorithm implementations directly in `tests/adapters.py`. The adapter file should only import and call/return implementations from `cs336_basics`.
 - When proposing code for the user to write, always explain: the exact file and location, the goal of the step, the minimal code snippet, Python/PyTorch syntax line by line, the algorithmic meaning, how to connect the adapter if needed, and the exact test command.
 - Follow the assignment PDF order when choosing the next topic. For the current training section, the order is: 4.1 cross entropy, 4.2 SGD explanation, 4.3 AdamW, 4.4 learning rate scheduling, 4.5 gradient clipping, 5.1 data loader, 5.2 checkpointing, 5.3 training loop, then generation and experiments.
+- For Assignment 2, use the Spring 2026 handout and `assignment2-systems/LEARNING_PLAN.md`. Teach the systems concept and CUDA/Triton/PyTorch syntax before each implementation step.
 
 中文协作约定：
 
@@ -29,3 +30,4 @@ This repository is used for guided CS336 self-study. Follow these preferences wh
 - 真实实现应写在 `cs336_basics/...` 中，不要把算法实现直接写进 `tests/adapters.py`；`adapters.py` 只负责从 `cs336_basics` 导入并转接给测试。
 - 给出实现建议时，必须说明：写在哪个文件和位置、这一步的目的、最小代码片段、逐行解释 Python/PyTorch 语法、算法含义、必要时 adapter 如何接测试，以及精确测试命令。
 - 选择下一步学习内容时，遵循 assignment PDF 顺序。当前训练部分顺序是：4.1 cross entropy、4.2 SGD 说明、4.3 AdamW、4.4 learning rate scheduling、4.5 gradient clipping、5.1 data loader、5.2 checkpointing、5.3 training loop，然后再进入 generation 和 experiments。
+- Assignment 2 使用 Spring 2026 handout 和 `assignment2-systems/LEARNING_PLAN.md` 的顺序；每次实现前先教学相关系统概念以及 PyTorch/CUDA/Triton 语法。

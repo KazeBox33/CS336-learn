@@ -2,7 +2,7 @@
 
 This repository tracks my self-study of Stanford CS336: Language Modeling from Scratch.
 
-本仓库用于记录我自学 Stanford CS336「从零实现语言模型」的过程，重点是通过 Assignment 1 打通从原始文本到小型 Transformer LM 训练的完整链路。
+本仓库用于记录我自学 Stanford CS336「从零实现语言模型」的过程：Assignment 1 打通从原始文本到小型 Transformer LM 训练的完整链路，Assignment 2 继续学习性能分析、Triton FlashAttention-2、分布式训练和优化器状态分片。
 
 ## Goals / 学习目标
 
@@ -14,6 +14,13 @@ This repository tracks my self-study of Stanford CS336: Language Modeling from S
 - 练习测试、调试、性能分析和面向效率的实现方式。
 
 ## Current Progress / 当前进度
+
+### Assignment 2 / Systems
+
+- Imported the official CS336 Spring 2026 Assignment 2 starter under `assignment2-systems/`.
+- 已将 CS336 Spring 2026 Assignment 2 starter 导入 `assignment2-systems/`。
+- Added an implementation-neutral task map at `assignment2-systems/LEARNING_PLAN.md`.
+- 已在 `assignment2-systems/LEARNING_PLAN.md` 中整理不包含答案的学习顺序。
 
 ### Completed / 已完成
 
