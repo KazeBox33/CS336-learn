@@ -3,6 +3,8 @@ import argparse
 import torch
 
 from cs336_basics.model import BasicsTransformerLM
+from cs336_basics.nn_utils import cross_entropy
+from cs336_basics.optimizer import AdamW
 
 
 MODEL_CONFIGS = {
@@ -78,3 +80,43 @@ def build_model(args: argparse.Namespace) -> BasicsTransformerLM:
     )
 
     return model.to(args.device)
+
+
+def make_random_batch(
+    args: argparse.Namespace,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    inputs = torch.randint(
+        low=0,
+        high=args.vocab_size,
+        size=(args.batch_size, args.context_length),
+        device=args.device,
+    )
+    targets = torch.randint(
+        low=0,
+        high=args.vocab_size,
+        size=(args.batch_size, args.context_length),
+        device=args.device,
+    )
+    return inputs, targets
+
+
+def run_step(
+    model: BasicsTransformerLM,
+    optimizer: AdamW,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    mode: str,
+) -> None:
+    if mode != "forward":
+        optimizer.zero_grad(set_to_none=True)
+
+    logits = model(inputs)
+
+    if mode == "forward":
+        return
+
+    loss = cross_entropy(logits, targets)
+    loss.backward()
+
+    if mode == "full":
+        optimizer.step()
