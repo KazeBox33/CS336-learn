@@ -1,0 +1,62 @@
+{
+  "tokenizer_throughput": [
+    {
+      "name": "Single process",
+      "tokens_per_second_millions": 0.193,
+      "speedup": 1.0
+    },
+    {
+      "name": "LRU cache",
+      "tokens_per_second_millions": 1.03,
+      "speedup": 5.34
+    },
+    {
+      "name": "Cache + 16 processes",
+      "tokens_per_second_millions": 9.14,
+      "speedup": 47.25
+    }
+  ],
+  "owt_validation_loss": [
+    {
+      "name": "5K baseline",
+      "tokens_seen_millions": 40.96,
+      "validation_loss": 5.0473
+    },
+    {
+      "name": "20K baseline",
+      "tokens_seen_millions": 327.68,
+      "validation_loss": 4.2442
+    },
+    {
+      "name": "512 ctx / 6 layers",
+      "tokens_seen_millions": 819.2,
+      "validation_loss": 3.6905
+    }
+  ],
+  "roadmap": [
+    {
+      "name": "A1 core implementation",
+      "status": "complete"
+    },
+    {
+      "name": "A1 E2E baseline runs",
+      "status": "complete"
+    },
+    {
+      "name": "A2 profiling",
+      "status": "in_progress"
+    },
+    {
+      "name": "A2 memory optimization",
+      "status": "planned"
+    },
+    {
+      "name": "A2 Triton FlashAttention-2",
+      "status": "planned"
+    },
+    {
+      "name": "A2 distributed training",
+      "status": "planned"
+    }
+  ]
+}
