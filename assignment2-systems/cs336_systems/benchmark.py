@@ -165,3 +165,39 @@ def summarize_timings(timings: list[float]) -> tuple[float, float]:
     std_ms = statistics.stdev(timings_ms)  # 标准差
 
     return mean_ms, std_ms
+
+
+def main() -> None:
+    args = parse_args()
+
+    model = build_model(args)
+    model.train()
+
+    optimizer = AdamW(model.parameters())
+    inputs, targets = make_random_batch(args)
+
+    timings = measure_steps(
+        model=model,
+        optimizer=optimizer,
+        inputs=inputs,
+        targets=targets,
+        mode=args.mode,
+        warmup_steps=args.warmup_steps,
+        measurement_steps=args.measurement_steps,
+        device=args.device,
+    )
+
+    mean_ms, std_ms = summarize_timings(timings)
+    num_parameters = sum(parameter.numel() for parameter in model.parameters())
+
+    print(f"model size: {args.model_size}")
+    print(f"parameters: {num_parameters:,}")
+    print(f"batch size: {args.batch_size}")
+    print(f"context length: {args.context_length}")
+    print(f"device: {args.device}")
+    print(f"mode: {args.mode}")
+    print(f"time: {mean_ms:.3f} +/- {std_ms:.3f} ms")
+
+
+if __name__ == "__main__":
+    main()
