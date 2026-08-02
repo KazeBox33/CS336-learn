@@ -42,6 +42,24 @@ Systems.
 - Benchmark claims must record hardware, dtype, tensor/model shape, warmup,
   repetitions, and synchronization method.
 
+## Experiment Artifacts
+
+- Generate write-up tables, plots, and other result images programmatically
+  from recorded benchmark data; do not manually transcribe values or edit
+  measured figures by hand.
+- Keep the plotting/table-generation code, structured raw results, and
+  generated outputs together so every figure can be reproduced after an
+  experiment changes.
+- Use tools such as pandas and matplotlib unless a task calls for a different
+  format. A plotting script should be able to regenerate the latest table or
+  image with one command.
+- Label every performance figure with the relevant units and experimental
+  variables, and record hardware, software versions, model/tensor shape,
+  dtype, warmup, repetitions, and synchronization method alongside the source
+  data.
+- When a benchmark task is completed, regenerate and inspect its tables and
+  images before treating the task as finished.
+
 ## Environment
 
 - macOS can be used for reading, editing, type checking, and CPU-compatible
