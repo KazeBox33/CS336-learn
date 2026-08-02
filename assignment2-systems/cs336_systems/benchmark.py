@@ -1,11 +1,12 @@
 import argparse
+import statistics
+import time
 
 import torch
 
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.nn_utils import cross_entropy
 from cs336_basics.optimizer import AdamW
-
 
 MODEL_CONFIGS = {
     "small": {
@@ -42,9 +43,7 @@ MODEL_CONFIGS = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Benchmark a CS336 Transformer training step."
-    )
+    parser = argparse.ArgumentParser(description="Benchmark a CS336 Transformer training step.")
 
     parser.add_argument(
         "--model-size",
@@ -120,3 +119,49 @@ def run_step(
 
     if mode == "full":
         optimizer.step()
+
+
+def synchronize(device: str) -> None:
+    if device.startswith("cuda"):
+        torch.cuda.synchronize()
+    elif device == "mps":
+        torch.mps.synchronize()
+
+
+def measure_steps(
+    model: BasicsTransformerLM,
+    optimizer: AdamW,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    mode: str,
+    warmup_steps: int,
+    measurement_steps: int,
+    device: str,
+) -> list[float]:
+    for _ in range(warmup_steps):
+        run_step(model, optimizer, inputs, targets, mode)
+
+    synchronize(device)
+
+    timings = []
+
+    for _ in range(measurement_steps):
+        synchronize(device)
+        start = time.perf_counter()
+
+        run_step(model, optimizer, inputs, targets, mode)
+
+        synchronize(device)
+        elapsed = time.perf_counter() - start
+        timings.append(elapsed)
+
+    return timings
+
+
+def summarize_timings(timings: list[float]) -> tuple[float, float]:
+    timings_ms = [elapsed * 1000 for elapsed in timings]  # 使用毫秒
+
+    mean_ms = statistics.mean(timings_ms)  # 平均值
+    std_ms = statistics.stdev(timings_ms)  # 标准差
+
+    return mean_ms, std_ms
