@@ -1,6 +1,8 @@
 import argparse
+import json
 import statistics
 import time
+from pathlib import Path
 
 import torch
 
@@ -62,6 +64,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup-steps", type=int, default=5)
     parser.add_argument("--measurement-steps", type=int, default=10)
     parser.add_argument("--device", type=str, default="cuda")
+
+    parser.add_argument("--output-path", type=Path, default=None)
 
     return parser.parse_args()
 
@@ -189,6 +193,28 @@ def main() -> None:
 
     mean_ms, std_ms = summarize_timings(timings)
     num_parameters = sum(parameter.numel() for parameter in model.parameters())
+
+    result = {
+        "model_size": args.model_size,
+        "model_config": MODEL_CONFIGS[args.model_size],
+        "parameters": num_parameters,
+        "batch_size": args.batch_size,
+        "context_length": args.context_length,
+        "device": args.device,
+        "mode": args.mode,
+        "warmup_steps": args.warmup_steps,
+        "measurement_steps": args.measurement_steps,
+        "timings_ms": [elapsed * 1000 for elapsed in timings],
+        "mean_ms": mean_ms,
+        "std_ms": std_ms,
+    }
+
+    if args.output_path is not None:
+        args.output_path.parent.mkdir(parents=True, exist_ok=True)
+        args.output_path.write_text(
+            json.dumps(result, indent=2),
+            encoding="utf-8",
+        )
 
     print(f"model size: {args.model_size}")
     print(f"parameters: {num_parameters:,}")
