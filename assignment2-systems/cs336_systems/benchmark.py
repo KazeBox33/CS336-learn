@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import statistics
 import time
 from contextlib import nullcontext
@@ -7,8 +8,10 @@ from pathlib import Path
 
 import torch
 
+import cs336_basics.model as basics_model
+from einops import einsum
 from cs336_basics.model import BasicsTransformerLM
-from cs336_basics.nn_utils import cross_entropy
+from cs336_basics.nn_utils import cross_entropy, softmax
 from cs336_basics.optimizer import AdamW
 
 MODEL_CONFIGS = {
@@ -68,6 +71,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--output-path", type=Path, default=None)
 
+    parser.add_argument(
+        "--annotate-attention",
+        action="store_true",
+    )
+
     return parser.parse_args()
 
 
@@ -109,6 +117,44 @@ def nvtx_range(message: str, device: str):
         return torch.cuda.nvtx.range(message)
 
     return nullcontext()
+
+
+def annotated_scaled_dot_product_attention(
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    device = Q.device.type
+
+    with nvtx_range("scaled dot product attention", device):
+        d_k = K.shape[-1]
+
+        with nvtx_range("computing attention scores", device):
+            attention_scores = einsum(
+                Q,
+                K,
+                "... query d_k, ... key d_k -> ... query key",
+            ) / math.sqrt(d_k)
+
+            if mask is not None:
+                attention_scores = torch.where(
+                    mask,
+                    attention_scores,
+                    float("-inf"),
+                )
+
+        with nvtx_range("computing softmax", device):
+            attention_weights = softmax(attention_scores, dim=-1)
+
+        with nvtx_range("final matmul", device):
+            output = einsum(
+                attention_weights,
+                V,
+                "... query key, ... key d_v -> ... query d_v",
+            )
+
+    return output
 
 
 def run_step(
@@ -186,6 +232,9 @@ def summarize_timings(timings: list[float]) -> tuple[float, float]:
 
 def main() -> None:
     args = parse_args()
+
+    if args.annotate_attention:
+        basics_model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
 
     model = build_model(args)
     model.train()
