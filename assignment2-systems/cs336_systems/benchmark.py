@@ -2,6 +2,7 @@ import argparse
 import json
 import statistics
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import torch
@@ -103,6 +104,13 @@ def make_random_batch(
     return inputs, targets
 
 
+def nvtx_range(message: str, device: str):
+    if device.startswith("cuda"):
+        return torch.cuda.nvtx.range(message)
+
+    return nullcontext()
+
+
 def run_step(
     model: BasicsTransformerLM,
     optimizer: AdamW,
@@ -110,19 +118,24 @@ def run_step(
     targets: torch.Tensor,
     mode: str,
 ) -> None:
+    device = inputs.device.type
+
     if mode != "forward":
         optimizer.zero_grad(set_to_none=True)
 
-    logits = model(inputs)
+    with nvtx_range("forward", device):
+        logits = model(inputs)
 
     if mode == "forward":
         return
 
-    loss = cross_entropy(logits, targets)
-    loss.backward()
+    with nvtx_range("loss and backward", device):
+        loss = cross_entropy(logits, targets)
+        loss.backward()
 
     if mode == "full":
-        optimizer.step()
+        with nvtx_range("optimizer", device):
+            optimizer.step()
 
 
 def synchronize(device: str) -> None:
@@ -148,16 +161,16 @@ def measure_steps(
     synchronize(device)
 
     timings = []
+    with nvtx_range("benchmark_measurement", device):
+        for _ in range(measurement_steps):
+            synchronize(device)
+            start = time.perf_counter()
 
-    for _ in range(measurement_steps):
-        synchronize(device)
-        start = time.perf_counter()
+            run_step(model, optimizer, inputs, targets, mode)
 
-        run_step(model, optimizer, inputs, targets, mode)
-
-        synchronize(device)
-        elapsed = time.perf_counter() - start
-        timings.append(elapsed)
+            synchronize(device)
+            elapsed = time.perf_counter() - start
+            timings.append(elapsed)
 
     return timings
 
