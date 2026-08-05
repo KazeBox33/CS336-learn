@@ -281,6 +281,9 @@ def main() -> None:
     mean_ms, std_ms = summarize_timings(timings)
     num_parameters = sum(parameter.numel() for parameter in model.parameters())
 
+    compute_dtype = "bfloat16" if args.mixed_precision else "float32"
+    parameter_dtype = str(next(model.parameters()).dtype)
+
     result = {
         "model_size": args.model_size,
         "model_config": MODEL_CONFIGS[args.model_size],
@@ -294,6 +297,9 @@ def main() -> None:
         "timings_ms": [elapsed * 1000 for elapsed in timings],
         "mean_ms": mean_ms,
         "std_ms": std_ms,
+        "mixed_precision": args.mixed_precision,
+        "compute_dtype": compute_dtype,
+        "parameter_dtype": parameter_dtype,
     }
 
     if args.output_path is not None:
@@ -310,6 +316,9 @@ def main() -> None:
     print(f"device: {args.device}")
     print(f"mode: {args.mode}")
     print(f"time: {mean_ms:.3f} +/- {std_ms:.3f} ms")
+    print(f"mixed precision: {args.mixed_precision}")
+    print(f"compute dtype: {compute_dtype}")
+    print(f"parameter dtype: {parameter_dtype}")
 
 
 if __name__ == "__main__":
