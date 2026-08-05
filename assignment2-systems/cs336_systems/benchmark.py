@@ -69,6 +69,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--measurement-steps", type=int, default=10)
     parser.add_argument("--device", type=str, default="cuda")
 
+    parser.add_argument(
+        "--mixed-precision",
+        action="store_true",
+        help="Use CUDA BF16 autocast during forward computation",
+    )
+
     parser.add_argument("--output-path", type=Path, default=None)
 
     parser.add_argument(
