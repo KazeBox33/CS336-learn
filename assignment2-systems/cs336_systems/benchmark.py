@@ -182,6 +182,7 @@ def run_step(
     inputs: torch.Tensor,
     targets: torch.Tensor,
     mode: str,
+    mixed_precision: bool,
 ) -> None:
     device = inputs.device.type
 
@@ -189,13 +190,16 @@ def run_step(
         optimizer.zero_grad(set_to_none=True)
 
     with nvtx_range("forward", device):
-        logits = model(inputs)
+        with mixed_precision_context(device, mixed_precision):
+            logits = model(inputs)
 
     if mode == "forward":
         return
 
     with nvtx_range("loss and backward", device):
-        loss = cross_entropy(logits, targets)
+        with mixed_precision_context(device, mixed_precision):
+            loss = cross_entropy(logits, targets)
+
         loss.backward()
 
     if mode == "full":
@@ -219,9 +223,10 @@ def measure_steps(
     warmup_steps: int,
     measurement_steps: int,
     device: str,
+    mixed_precision: bool,
 ) -> list[float]:
     for _ in range(warmup_steps):
-        run_step(model, optimizer, inputs, targets, mode)
+        run_step(model, optimizer, inputs, targets, mode, mixed_precision)
 
     synchronize(device)
 
@@ -231,7 +236,7 @@ def measure_steps(
             synchronize(device)
             start = time.perf_counter()
 
-            run_step(model, optimizer, inputs, targets, mode)
+            run_step(model, optimizer, inputs, targets, mode, mixed_precision)
 
             synchronize(device)
             elapsed = time.perf_counter() - start
@@ -270,6 +275,7 @@ def main() -> None:
         warmup_steps=args.warmup_steps,
         measurement_steps=args.measurement_steps,
         device=args.device,
+        mixed_precision=args.mixed_precision,
     )
 
     mean_ms, std_ms = summarize_timings(timings)
