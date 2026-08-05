@@ -125,6 +125,19 @@ def nvtx_range(message: str, device: str):
     return nullcontext()
 
 
+def mixed_precision_context(device: str, enabled: bool):
+    if not enabled:
+        return nullcontext()
+
+    if not device.startswith("cuda"):
+        raise ValueError("BF16 mixed precision benchmarking requires a CUDA device")
+
+    return torch.autocast(
+        device_type="cuda",
+        dtype=torch.bfloat16,
+    )
+
+
 def annotated_scaled_dot_product_attention(
     Q: torch.Tensor,
     K: torch.Tensor,
