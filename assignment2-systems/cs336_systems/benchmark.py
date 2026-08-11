@@ -264,6 +264,8 @@ def measure_steps(
     measurement_steps: int,
     device: str,
     mixed_precision: bool,
+    memory_profile: bool,
+    memory_snapshot_path: Path,
 ) -> list[float]:
     for _ in range(warmup_steps):
         run_step(model, optimizer, inputs, targets, mode, mixed_precision)
@@ -271,16 +273,21 @@ def measure_steps(
     synchronize(device)
 
     timings = []
-    with nvtx_range("benchmark_measurement", device):
-        for _ in range(measurement_steps):
-            synchronize(device)
-            start = time.perf_counter()
+    with memory_profile_context(
+        device=device,
+        enabled=memory_profile,
+        snapshot_path=memory_snapshot_path,
+    ):
+        with nvtx_range("benchmark_measurement", device):
+            for _ in range(measurement_steps):
+                synchronize(device)
+                start = time.perf_counter()
 
-            run_step(model, optimizer, inputs, targets, mode, mixed_precision)
+                run_step(model, optimizer, inputs, targets, mode, mixed_precision)
 
-            synchronize(device)
-            elapsed = time.perf_counter() - start
-            timings.append(elapsed)
+                synchronize(device)
+                elapsed = time.perf_counter() - start
+                timings.append(elapsed)
 
     return timings
 
@@ -316,6 +323,8 @@ def main() -> None:
         measurement_steps=args.measurement_steps,
         device=args.device,
         mixed_precision=args.mixed_precision,
+        memory_profile=args.memory_profile,
+        memory_snapshot_path=args.memory_snapshot_path,
     )
 
     mean_ms, std_ms = summarize_timings(timings)
