@@ -3,7 +3,8 @@ import json
 import math
 import statistics
 import time
-from contextlib import nullcontext
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import torch
@@ -148,6 +149,33 @@ def mixed_precision_context(device: str, enabled: bool):
         device_type="cuda",
         dtype=torch.bfloat16,
     )
+
+
+@contextmanager  # 把包含 yield 的函数转换为上下文管理器
+def memory_profile_context(
+    device: str,
+    enabled: bool,
+    snapshot_path: Path,
+) -> Iterator[None]:
+    if not enabled:
+        yield
+        return
+
+    if not device.startswith("cuda"):
+        raise ValueError("CUDA memory profiling requires a CUDA device")
+
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+
+    torch.cuda.memory._record_memory_history(
+        max_entries=1_000_000,
+    )
+
+    try:
+        yield
+        torch.cuda.synchronize()
+        torch.cuda.memory._dump_snapshot(str(snapshot_path))
+    finally:
+        torch.cuda.memory._record_memory_history(enabled=None)
 
 
 def annotated_scaled_dot_product_attention(
