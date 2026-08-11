@@ -75,6 +75,18 @@ def parse_args() -> argparse.Namespace:
         help="Use CUDA BF16 autocast during forward computation",
     )
 
+    parser.add_argument(
+        "--memory-profile",
+        action="store_true",
+        help="Record a CUDA memory snapshot during measured steps.",
+    )
+
+    parser.add_argument(
+        "--memory-snapshot-path",
+        type=Path,
+        default=Path("memory_snapshot.pickle"),
+    )
+
     parser.add_argument("--output-path", type=Path, default=None)
 
     parser.add_argument(

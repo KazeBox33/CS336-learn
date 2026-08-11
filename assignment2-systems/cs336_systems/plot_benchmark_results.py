@@ -42,6 +42,36 @@ def build_phase_table(
     return phases.loc[model_order]
 
 
+def build_precision_table(
+    results: pd.DataFrame,
+    batch_size: int,
+    context_length: int,
+    warmup_steps: int,
+    mode: str,
+) -> pd.DataFrame:
+    filtered = results[
+        (results["batch_size"] == batch_size)
+        & (results["context_length"] == context_length)
+        & (results["warmup_steps"] == warmup_steps)
+        & (results["mode"] == mode)
+    ]
+
+    comparison = filtered.pivot(
+        index="model_size",
+        columns="compute_dtype",
+        values="mean_ms",
+    )
+    comparison["speedup"] = comparison["float32"] / comparison["bfloat16"]
+
+    model_order = [
+        model_size
+        for model_size in MODEL_CONFIGS
+        if model_size in comparison.index
+    ]
+
+    return comparison.loc[model_order]
+
+
 def plot_phase_times(
     phases: pd.DataFrame,
     output_path: Path,
