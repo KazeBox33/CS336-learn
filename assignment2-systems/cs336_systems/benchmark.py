@@ -349,6 +349,12 @@ def main() -> None:
         "mixed_precision": args.mixed_precision,
         "compute_dtype": compute_dtype,
         "parameter_dtype": parameter_dtype,
+        "memory_profile": args.memory_profile,
+        "memory_snapshot_path": (
+            str(args.memory_snapshot_path)
+            if args.memory_profile
+            else None
+        ),
     }
 
     if args.output_path is not None:
@@ -368,6 +374,10 @@ def main() -> None:
     print(f"mixed precision: {args.mixed_precision}")
     print(f"compute dtype: {compute_dtype}")
     print(f"parameter dtype: {parameter_dtype}")
+    print(f"memory profile: {args.memory_profile}")
+
+    if args.memory_profile:
+        print(f"memory snapshot: {args.memory_snapshot_path}")
 
 
 if __name__ == "__main__":
