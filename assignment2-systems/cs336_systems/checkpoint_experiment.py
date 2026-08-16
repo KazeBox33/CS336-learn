@@ -93,9 +93,9 @@ def profile(args: argparse.Namespace) -> dict[str, object]:
 
     block.zero_grad(set_to_none=True)
     if args.device.startswith("cuda"):
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()
-        memory_before = torch.cuda.memory_allocated()
+        torch.cuda.empty_cache() #归还空闲显存
+        torch.cuda.reset_peak_memory_stats() #重置状态
+        memory_before = torch.cuda.memory_allocated() #记录开始前实际的tensor使用显存
     else:
         memory_before = None
 
@@ -114,7 +114,7 @@ def profile(args: argparse.Namespace) -> dict[str, object]:
     synchronize(args.device)
     elapsed_seconds = time.perf_counter() - start
 
-    peak_memory = (
+    peak_memory = ( #读取峰值
         torch.cuda.max_memory_allocated()
         if args.device.startswith("cuda")
         else None

@@ -36,7 +36,7 @@ def run_and_collect_gradients(
 
     output.square().mean().backward()
     parameter_gradients = [
-        parameter.grad.detach().clone()
+        parameter.grad.detach().clone() #clone创建独立副本 , detach撕裂计算图
         for layer in layers
         for parameter in layer.parameters()
     ]
@@ -47,10 +47,10 @@ def run_and_collect_gradients(
 def test_checkpointing_matches_uncheckpointed_gradients(strategy: str) -> None:
     torch.manual_seed(0)
     baseline_layers = nn.ModuleList([ResidualBlock(8) for _ in range(4)])
-    checkpointed_layers = copy.deepcopy(baseline_layers)
+    checkpointed_layers = copy.deepcopy(baseline_layers) # 复制后数值相同
 
     baseline_x = torch.randn(2, 3, 8, requires_grad=True)
-    checkpointed_x = baseline_x.detach().clone().requires_grad_(True)
+    checkpointed_x = baseline_x.detach().clone().requires_grad_(True) #重新启用梯度
 
     baseline = run_and_collect_gradients(baseline_layers, baseline_x, "none")
     checkpointed = run_and_collect_gradients(

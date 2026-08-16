@@ -4,13 +4,13 @@ from collections.abc import Callable, Sequence
 from functools import partial
 
 import torch
-from torch.utils.checkpoint import checkpoint
+from torch.utils.checkpoint import checkpoint #导入checkpoint
 
-TensorLayer = Callable[[torch.Tensor], torch.Tensor]
+TensorLayer = Callable[[torch.Tensor], torch.Tensor] #类型别名，接收一个torch.Tensor 返回一个torch.Tensor
 
 
 def run_layers(
-    layers: Sequence[TensorLayer],
+    layers: Sequence[TensorLayer], #Sequence表示一个有顺序、可以遍历的容器 里面是 TensorLayer
     x: torch.Tensor,
 ) -> torch.Tensor:
     """Run a sequence of layers without activation checkpointing."""
@@ -19,7 +19,7 @@ def run_layers(
     return x
 
 
-def checkpoint_layers_in_segments(
+def checkpoint_layers_in_segments( #按照段来设置checkpoint
     layers: Sequence[TensorLayer],
     x: torch.Tensor,
     segment_size: int,
@@ -35,7 +35,7 @@ def checkpoint_layers_in_segments(
     for start in range(0, len(layers), segment_size):
         segment = layers[start : start + segment_size]
         x = checkpoint(
-            partial(run_layers, segment),
+            partial(run_layers, segment), # partial 是用来固定参数的，相当于把segement 这个参数给固定了
             x,
             use_reentrant=False,
         )
