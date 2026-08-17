@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import math
 import time
+from pathlib import Path
 from typing import Any
 
 import torch
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Benchmark one ordinary PyTorch attention configuration."
+    )
+    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--sequence-length", type=int, default=256)
+    parser.add_argument("--d-model", type=int, default=16)
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--warmup-steps", type=int, default=5)
+    parser.add_argument("--measurement-steps", type=int, default=100)
+    parser.add_argument("--output-path", type=Path, default=None)
+    return parser.parse_args()
 
 
 def scaled_dot_product_attention(
@@ -90,13 +107,13 @@ def benchmark_single_configuration(
         del output
 
     backward_timings_ms: list[float] = []
-    backward_start_memory_bytes: list[int] = []
+    backward_start_memory_bytes: list[int] = [] # 保存每次backward开始前，CUDA当前已经分配的显存
     if torch_device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(torch_device)
+        torch.cuda.reset_peak_memory_stats(torch_device) #重置峰值显存统计
 
     for _ in range(measurement_steps):
         q.grad = k.grad = v.grad = None
-        output = scaled_dot_product_attention(q, k, v)
+        output = scaled_dot_product_attention(q, k, v) # 每次backward后都需要一张新的计算图
         loss = output.sum()
         _synchronize(torch_device)
 
@@ -126,3 +143,26 @@ def benchmark_single_configuration(
         result["peak_memory_allocated_bytes"] = torch.cuda.max_memory_allocated(torch_device)
 
     return result
+
+
+def main() -> None:
+    args = parse_args()
+    result = benchmark_single_configuration(
+        batch_size=args.batch_size,
+        sequence_length=args.sequence_length,
+        d_model=args.d_model,
+        device=args.device,
+        warmup_steps=args.warmup_steps,
+        measurement_steps=args.measurement_steps,
+    )
+
+    result_json = json.dumps(result, indent=2)
+    print(result_json)
+
+    if args.output_path is not None:
+        args.output_path.parent.mkdir(parents=True, exist_ok=True)
+        args.output_path.write_text(result_json, encoding="utf-8")
+
+
+if __name__ == "__main__":
+    main()
