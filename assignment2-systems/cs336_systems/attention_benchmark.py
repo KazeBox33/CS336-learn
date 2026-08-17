@@ -126,6 +126,7 @@ def benchmark_single_configuration(
         backward_timings_ms.append((time.perf_counter() - start) * 1000)
 
     result: dict[str, Any] = {
+        "status": "ok",
         "batch_size": batch_size,
         "sequence_length": sequence_length,
         "d_model": d_model,
@@ -147,14 +148,26 @@ def benchmark_single_configuration(
 
 def main() -> None:
     args = parse_args()
-    result = benchmark_single_configuration(
-        batch_size=args.batch_size,
-        sequence_length=args.sequence_length,
-        d_model=args.d_model,
-        device=args.device,
-        warmup_steps=args.warmup_steps,
-        measurement_steps=args.measurement_steps,
-    )
+    try:
+        result = benchmark_single_configuration(
+            batch_size=args.batch_size,
+            sequence_length=args.sequence_length,
+            d_model=args.d_model,
+            device=args.device,
+            warmup_steps=args.warmup_steps,
+            measurement_steps=args.measurement_steps,
+        )
+    except torch.OutOfMemoryError as error: # 当前只捕获OOM
+        result = { 
+            "status": "oom",
+            "batch_size": args.batch_size,
+            "sequence_length": args.sequence_length,
+            "d_model": args.d_model,
+            "device": args.device,
+            "warmup_steps": args.warmup_steps,
+            "measurement_steps": args.measurement_steps,
+            "error": str(error),
+        }
 
     result_json = json.dumps(result, indent=2)
     print(result_json)
