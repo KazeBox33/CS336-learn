@@ -33,6 +33,12 @@ def parse_args() -> argparse.Namespace:
         choices=("float32", "bfloat16"),
         default=["float32", "bfloat16"],
     )
+    parser.add_argument(
+        "--implementations",
+        nargs="+",
+        choices=("eager", "compiled"),
+        default=["eager", "compiled"],
+    )
 
     parser.add_argument(
         "--output-dir",
@@ -50,37 +56,41 @@ def main() -> None:
         for mode in args.modes:
             for warmup_steps in args.warmup_steps:
                 for precision in args.precisions:
-                    precision_tag = "bf16" if precision == "bfloat16" else "fp32"
+                    for implementation in args.implementations:
+                        precision_tag = "bf16" if precision == "bfloat16" else "fp32"
 
-                    output_path = args.output_dir / (
-                        f"{model_size}_{mode}_{precision_tag}_"
-                        f"b{args.batch_size}_l{args.context_length}_w{warmup_steps}.json"
-                    )
-                    command = [
-                        sys.executable,  # 返回当前Python解释器的绝对路径
-                        "-m",  # 按照python模块运行
-                        "cs336_systems.benchmark",
-                        "--model-size",
-                        model_size,
-                        "--batch-size",
-                        str(args.batch_size),
-                        "--context-length",
-                        str(args.context_length),
-                        "--mode",
-                        mode,
-                        "--warmup-steps",
-                        str(warmup_steps),
-                        "--measurement-steps",
-                        str(args.measurement_steps),
-                        "--device",
-                        args.device,
-                        "--output-path",
-                        str(output_path),
-                    ]
-                    if precision == "bfloat16":
-                        command.append("--mixed-precision")
-                    print("Running:", " ".join(command), flush=True)
-                    subprocess.run(command, check=True)
+                        output_path = args.output_dir / (
+                            f"{model_size}_{mode}_{precision_tag}_"
+                            f"{implementation}_b{args.batch_size}_"
+                            f"l{args.context_length}_w{warmup_steps}.json"
+                        )
+                        command = [
+                            sys.executable,  # 返回当前Python解释器的绝对路径
+                            "-m",  # 按照python模块运行
+                            "cs336_systems.benchmark",
+                            "--model-size",
+                            model_size,
+                            "--batch-size",
+                            str(args.batch_size),
+                            "--context-length",
+                            str(args.context_length),
+                            "--mode",
+                            mode,
+                            "--warmup-steps",
+                            str(warmup_steps),
+                            "--measurement-steps",
+                            str(args.measurement_steps),
+                            "--device",
+                            args.device,
+                            "--output-path",
+                            str(output_path),
+                        ]
+                        if precision == "bfloat16":
+                            command.append("--mixed-precision")
+                        if implementation == "compiled":
+                            command.append("--compile-model")
+                        print("Running:", " ".join(command), flush=True)
+                        subprocess.run(command, check=True)
 
 
 if __name__ == "__main__":
