@@ -6,10 +6,13 @@ import argparse
 import json
 import math
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import torch
+
+AttentionFunction = Callable[[torch.Tensor, torch.Tensor, torch.Tensor], torch.Tensor]
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,6 +25,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--warmup-steps", type=int, default=5)
     parser.add_argument("--measurement-steps", type=int, default=100)
+    parser.add_argument("--compile", action="store_true")
     parser.add_argument("--output-path", type=Path, default=None)
     return parser.parse_args()
 
@@ -74,6 +78,8 @@ def benchmark_single_configuration(
     device: str = "cuda",
     warmup_steps: int = 5,
     measurement_steps: int = 100,
+    attention_fn: AttentionFunction = scaled_dot_product_attention,
+    implementation: str = "eager",
 ) -> dict[str, Any]:
     """Benchmark one ``(batch_size, sequence_length, d_model)`` setting.
 
@@ -89,8 +95,8 @@ def benchmark_single_configuration(
 
     for _ in range(warmup_steps):
         with torch.no_grad():
-            scaled_dot_product_attention(q, k, v)
-        output = scaled_dot_product_attention(q, k, v)
+            attention_fn(q, k, v)
+        output = attention_fn(q, k, v)
         output.sum().backward()
         q.grad = k.grad = v.grad = None
 
@@ -101,7 +107,7 @@ def benchmark_single_configuration(
         _synchronize(torch_device)
         start = time.perf_counter()
         with torch.no_grad():
-            output = scaled_dot_product_attention(q, k, v)
+            output = attention_fn(q, k, v)
         _synchronize(torch_device)
         forward_timings_ms.append((time.perf_counter() - start) * 1000)
         del output
@@ -113,7 +119,7 @@ def benchmark_single_configuration(
 
     for _ in range(measurement_steps):
         q.grad = k.grad = v.grad = None
-        output = scaled_dot_product_attention(q, k, v) # 每次backward后都需要一张新的计算图
+        output = attention_fn(q, k, v) # 每次backward后都需要一张新的计算图
         loss = output.sum()
         _synchronize(torch_device)
 
@@ -127,6 +133,7 @@ def benchmark_single_configuration(
 
     result: dict[str, Any] = {
         "status": "ok",
+        "implementation": implementation,
         "batch_size": batch_size,
         "sequence_length": sequence_length,
         "d_model": d_model,
@@ -148,6 +155,13 @@ def benchmark_single_configuration(
 
 def main() -> None:
     args = parse_args()
+    implementation = "compiled" if args.compile else "eager"
+    attention_fn = (
+        torch.compile(scaled_dot_product_attention)  
+        if args.compile
+        else scaled_dot_product_attention
+    )
+
     try:
         result = benchmark_single_configuration(
             batch_size=args.batch_size,
@@ -156,10 +170,13 @@ def main() -> None:
             device=args.device,
             warmup_steps=args.warmup_steps,
             measurement_steps=args.measurement_steps,
+            attention_fn=attention_fn,
+            implementation=implementation,
         )
     except torch.OutOfMemoryError as error: # 当前只捕获OOM
         result = { 
             "status": "oom",
+            "implementation": implementation,
             "batch_size": args.batch_size,
             "sequence_length": args.sequence_length,
             "d_model": args.d_model,
