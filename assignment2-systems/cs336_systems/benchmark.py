@@ -77,6 +77,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--compile-model",
+        action="store_true",
+        help="Compile the Transformer model with torch.compile",
+    )
+
+    parser.add_argument(
         "--memory-profile",
         action="store_true",
         help="Record a CUDA memory snapshot during measured steps.",
@@ -308,6 +314,8 @@ def main() -> None:
         basics_model.scaled_dot_product_attention = annotated_scaled_dot_product_attention
 
     model = build_model(args)
+    if args.compile_model:
+        model = torch.compile(model)
     model.train()
 
     optimizer = AdamW(model.parameters())
@@ -341,6 +349,8 @@ def main() -> None:
         "context_length": args.context_length,
         "device": args.device,
         "mode": args.mode,
+        "implementation": "compiled" if args.compile_model else "eager",
+        "compile_model": args.compile_model,
         "warmup_steps": args.warmup_steps,
         "measurement_steps": args.measurement_steps,
         "timings_ms": [elapsed * 1000 for elapsed in timings],
