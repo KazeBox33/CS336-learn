@@ -4,6 +4,13 @@ from typing import Any
 
 import torch
 
+try:  # Mac 没有 Triton，所以使用 try 保留 PyTorch 实现。
+    import triton
+    import triton.language as tl
+except ModuleNotFoundError:
+    triton = None
+    tl = None
+
 Q_TILE_SIZE = 16
 K_TILE_SIZE = 16
 
@@ -131,4 +138,224 @@ class FlashAttentionPyTorch(torch.autograd.Function):
     ) -> tuple[torch.Tensor | None, ...]:
         raise NotImplementedError(
             "The FlashAttention backward pass is not implemented yet"
+        )
+
+
+if triton is not None:
+
+    @triton.jit
+    def _flash_forward_kernel(
+        q_ptr,
+        k_ptr,
+        v_ptr,
+        output_ptr,
+        logsumexp_ptr,
+        stride_qb,  # Q 的形状为 (B, Nq, D)。
+        stride_qq,
+        stride_qd,
+        stride_kb,
+        stride_kk,
+        stride_kd,
+        stride_vb,
+        stride_vk,
+        stride_vd,
+        stride_ob,
+        stride_oq,
+        stride_od,
+        stride_lb,
+        stride_lq,
+        n_queries,
+        n_keys,
+        scale,
+        d_model: tl.constexpr,
+        query_tile_size: tl.constexpr,
+        key_tile_size: tl.constexpr,
+        is_causal: tl.constexpr,
+    ):
+        query_tile_index = tl.program_id(0)  # 确定当前 program 负责的 query tile。
+        batch_index = tl.program_id(1)
+        query_start = query_tile_index * query_tile_size
+
+        query_block_ptr = tl.make_block_ptr(
+            base=q_ptr + batch_index * stride_qb,
+            shape=(n_queries, d_model),
+            strides=(stride_qq, stride_qd),
+            offsets=(query_start, 0),
+            block_shape=(query_tile_size, d_model),
+            order=(1, 0),
+        )
+        key_block_ptr = tl.make_block_ptr(
+            base=k_ptr + batch_index * stride_kb,
+            shape=(d_model, n_keys),
+            strides=(stride_kd, stride_kk),
+            offsets=(0, 0),
+            block_shape=(d_model, key_tile_size),
+            order=(0, 1),
+        )
+        value_block_ptr = tl.make_block_ptr(
+            base=v_ptr + batch_index * stride_vb,
+            shape=(n_keys, d_model),
+            strides=(stride_vk, stride_vd),
+            offsets=(0, 0),
+            block_shape=(key_tile_size, d_model),
+            order=(1, 0),
+        )
+        output_block_ptr = tl.make_block_ptr(
+            base=output_ptr + batch_index * stride_ob,
+            shape=(n_queries, d_model),
+            strides=(stride_oq, stride_od),
+            offsets=(query_start, 0),
+            block_shape=(query_tile_size, d_model),
+            order=(1, 0),
+        )
+
+        query = tl.load(
+            query_block_ptr,
+            boundary_check=(0, 1),
+            padding_option="zero",
+        )
+        output_accumulator = tl.zeros(  # o
+            (query_tile_size, d_model),
+            dtype=tl.float32,
+        )
+        denominator = tl.zeros((query_tile_size,), dtype=tl.float32)  # l
+        row_maximum = tl.full(  # m
+            (query_tile_size,),
+            -float("inf"),
+            dtype=tl.float32,
+        )
+
+        query_offsets = query_start + tl.arange(0, query_tile_size)
+        key_offsets = tl.arange(0, key_tile_size)
+
+        for key_start in range(0, n_keys, key_tile_size):
+            key = tl.load(
+                key_block_ptr,
+                boundary_check=(0, 1),
+                padding_option="zero",
+            )
+            value = tl.load(
+                value_block_ptr,
+                boundary_check=(0, 1),
+                padding_option="zero",
+            )
+
+            scores = tl.dot(query, key) * scale
+            valid_keys = key_offsets + key_start < n_keys
+            scores = tl.where(valid_keys[None, :], scores, -float("inf"))
+            if is_causal:
+                causal_mask = query_offsets[:, None] >= (
+                    key_offsets[None, :] + key_start
+                )
+                scores = tl.where(causal_mask, scores, -float("inf"))
+
+            new_row_maximum = tl.maximum(
+                row_maximum,
+                tl.max(scores, axis=1),
+            )
+            correction = tl.exp(row_maximum - new_row_maximum)
+            probabilities = tl.exp(scores - new_row_maximum[:, None])
+
+            denominator = (
+                correction * denominator
+                + tl.sum(probabilities, axis=1)
+            )
+            output_accumulator = (
+                correction[:, None] * output_accumulator
+                + tl.dot(probabilities.to(value.dtype), value)
+            )
+            row_maximum = new_row_maximum
+
+            key_block_ptr = key_block_ptr.advance((0, key_tile_size))
+            value_block_ptr = value_block_ptr.advance((key_tile_size, 0))
+
+        output = output_accumulator / denominator[:, None]
+        tl.store(
+            output_block_ptr,
+            output,
+            boundary_check=(0, 1),
+        )
+
+        logsumexp_offsets = (
+            batch_index * stride_lb
+            + query_offsets * stride_lq
+        )
+        tl.store(
+            logsumexp_ptr + logsumexp_offsets,
+            row_maximum + tl.log(denominator),
+            mask=query_offsets < n_queries,
+        )
+
+else:
+    _flash_forward_kernel = None
+
+
+class FlashAttentionTriton(torch.autograd.Function):
+    @staticmethod
+    def forward(
+        ctx: Any,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        is_causal: bool = False,
+    ) -> torch.Tensor:
+        _validate_attention_inputs(q, k, v)
+
+        if triton is None or _flash_forward_kernel is None:
+            raise RuntimeError(
+                "Triton FlashAttention requires Triton on a supported Linux system"
+            )
+        if not isinstance(is_causal, bool):
+            raise TypeError("is_causal must be a bool")
+        if q.device.type != "cuda":
+            raise ValueError("Triton FlashAttention requires CUDA tensors")
+
+        batch_size, n_queries, d_model = q.shape
+        n_keys = k.shape[1]
+        if d_model < 16 or not triton.next_power_of_2(d_model) == d_model:
+            raise ValueError("d_model must be a power of two and at least 16")
+
+        output = torch.empty_like(q)
+        logsumexp = torch.empty(
+            (batch_size, n_queries),
+            device=q.device,
+            dtype=torch.float32,
+        )
+        launch_grid = (
+            triton.cdiv(n_queries, Q_TILE_SIZE),
+            batch_size,
+        )
+
+        with torch.cuda.device(q.device):
+            _flash_forward_kernel[launch_grid](
+                q,
+                k,
+                v,
+                output,
+                logsumexp,
+                *q.stride(),
+                *k.stride(),
+                *v.stride(),
+                *output.stride(),
+                *logsumexp.stride(),
+                n_queries,
+                n_keys,
+                d_model**-0.5,
+                d_model=d_model,
+                query_tile_size=Q_TILE_SIZE,
+                key_tile_size=K_TILE_SIZE,
+                is_causal=is_causal,
+            )
+
+        ctx.save_for_backward(logsumexp, q, k, v, output)
+        ctx.is_causal = is_causal
+        return output
+
+    @staticmethod
+    def backward(
+        ctx: Any,
+        grad_output: torch.Tensor,
+    ) -> tuple[torch.Tensor | None, ...]:
+        raise NotImplementedError(
+            "The Triton FlashAttention backward pass is not implemented yet"
         )
