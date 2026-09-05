@@ -50,7 +50,7 @@ class FlashAttentionPyTorch(torch.autograd.Function):
         v: torch.Tensor,
         is_causal: bool = False,
     ) -> torch.Tensor:
-        _validate_attention_inputs(q, k, v)
+        _validate_attention_inputs(q, k, v)  # 验证输入。
 
         if not isinstance(is_causal, bool):
             raise TypeError("is_causal must be a bool")
@@ -60,7 +60,7 @@ class FlashAttentionPyTorch(torch.autograd.Function):
         scale = d_model**-0.5
 
         output = torch.empty_like(q)
-        logsumexp = torch.empty(
+        logsumexp = torch.empty(  # 每个 query row 保存一个 LSE。
             (batch_size, n_queries),
             device=q.device,
             dtype=torch.float32,
@@ -71,17 +71,17 @@ class FlashAttentionPyTorch(torch.autograd.Function):
             query = q[:, query_start:query_end, :].to(torch.float32)
             query_tile_size = query_end - query_start
 
-            output_accumulator = torch.zeros(
+            output_accumulator = torch.zeros(  # 初始化 o。
                 (batch_size, query_tile_size, d_model),
                 device=q.device,
                 dtype=torch.float32,
             )
-            denominator = torch.zeros(
+            denominator = torch.zeros(  # 对应 l，保存每个 query row 当前累计的分母。
                 (batch_size, query_tile_size),
                 device=q.device,
                 dtype=torch.float32,
             )
-            row_maximum = torch.full(
+            row_maximum = torch.full(  # 对应 m，保存每个 query row 当前见过的最大 score。
                 (batch_size, query_tile_size),
                 -torch.inf,
                 device=q.device,
@@ -93,21 +93,21 @@ class FlashAttentionPyTorch(torch.autograd.Function):
                 key = k[:, key_start:key_end, :].to(torch.float32)
                 value = v[:, key_start:key_end, :].to(torch.float32)
 
-                scores = torch.matmul(query, key.transpose(-2, -1)) * scale
-                new_row_maximum = torch.maximum(
+                scores = torch.matmul(query, key.transpose(-2, -1)) * scale  # 计算 score。
+                new_row_maximum = torch.maximum(  # 更新最大值。
                     row_maximum,
                     scores.amax(dim=-1),
                 )
-                correction = torch.exp(row_maximum - new_row_maximum)
+                correction = torch.exp(row_maximum - new_row_maximum)  # 计算校正因子。
                 probabilities = torch.exp(
                     scores - new_row_maximum.unsqueeze(-1)
                 )
 
-                denominator = (
+                denominator = (  # 更新累计分母。
                     correction * denominator
                     + probabilities.sum(dim=-1)
                 )
-                output_accumulator = (
+                output_accumulator = (  # 更新 output 的未归一化累加值。
                     correction.unsqueeze(-1) * output_accumulator
                     + torch.matmul(probabilities, value)
                 )
@@ -120,7 +120,7 @@ class FlashAttentionPyTorch(torch.autograd.Function):
                 row_maximum + torch.log(denominator)
             )
 
-        ctx.save_for_backward(logsumexp, q, k, v, output)
+        ctx.save_for_backward(logsumexp, q, k, v, output)  # 供反向传播使用。
         ctx.is_causal = is_causal
         return output
 
