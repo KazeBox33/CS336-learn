@@ -1,4 +1,4 @@
-"""Benchmark materialized attention against the partially fused FlashAttention-2 path."""
+"""Benchmark materialized attention against the Triton FlashAttention-2 path."""
 
 from __future__ import annotations
 

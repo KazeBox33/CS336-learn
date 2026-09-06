@@ -337,8 +337,425 @@ if triton is not None:
             mask=query_offsets < n_queries,
         )
 
+
+    @triton.jit
+    def _flash_backward_preprocess_kernel( # 计算 delta
+        output_ptr,
+        grad_output_ptr,
+        delta_ptr,
+        stride_ob,
+        stride_oq,
+        stride_od,
+        stride_gob,
+        stride_goq,
+        stride_god,
+        stride_db,
+        stride_dq,
+        n_queries,
+        d_model: tl.constexpr,
+        query_tile_size: tl.constexpr,
+    ):
+        query_tile_index = tl.program_id(0)
+        batch_index = tl.program_id(1)
+        query_start = query_tile_index * query_tile_size
+
+        output_block_ptr = tl.make_block_ptr(
+            base=output_ptr + batch_index * stride_ob,
+            shape=(n_queries, d_model),
+            strides=(stride_oq, stride_od),
+            offsets=(query_start, 0),
+            block_shape=(query_tile_size, d_model),
+            order=(1, 0),
+        )
+        grad_output_block_ptr = tl.make_block_ptr(
+            base=grad_output_ptr + batch_index * stride_gob,
+            shape=(n_queries, d_model),
+            strides=(stride_goq, stride_god),
+            offsets=(query_start, 0),
+            block_shape=(query_tile_size, d_model),
+            order=(1, 0),
+        )
+
+        output = tl.load(
+            output_block_ptr,
+            boundary_check=(0, 1),
+            padding_option="zero",
+        ).to(tl.float32)
+        grad_output = tl.load(
+            grad_output_block_ptr,
+            boundary_check=(0, 1),
+            padding_option="zero",
+        ).to(tl.float32)
+        delta = tl.sum(output * grad_output, axis=1)
+
+        query_offsets = query_start + tl.arange(0, query_tile_size)
+        tl.store(
+            delta_ptr
+            + batch_index * stride_db
+            + query_offsets * stride_dq,
+            delta,
+            mask=query_offsets < n_queries,
+        )
+
+
+    @triton.jit
+    def _flash_backward_dkdv_kernel( # 计算 dk dv
+        q_ptr,
+        k_ptr,
+        v_ptr,
+        grad_output_ptr,
+        logsumexp_ptr,
+        delta_ptr,
+        grad_k_ptr,
+        grad_v_ptr,
+        stride_qb,
+        stride_qq,
+        stride_qd,
+        stride_kb,
+        stride_kk,
+        stride_kd,
+        stride_vb,
+        stride_vk,
+        stride_vd,
+        stride_gob,
+        stride_goq,
+        stride_god,
+        stride_lb,
+        stride_lq,
+        stride_db,
+        stride_dq,
+        stride_gkb,
+        stride_gkk,
+        stride_gkd,
+        stride_gvb,
+        stride_gvk,
+        stride_gvd,
+        n_queries,
+        n_keys,
+        scale,
+        d_model: tl.constexpr,
+        query_tile_size: tl.constexpr,
+        key_tile_size: tl.constexpr,
+        is_causal: tl.constexpr,
+    ):
+        key_tile_index = tl.program_id(0)
+        batch_index = tl.program_id(1)
+        key_start = key_tile_index * key_tile_size
+
+        key_transpose_block_ptr = tl.make_block_ptr(
+            base=k_ptr + batch_index * stride_kb,
+            shape=(d_model, n_keys),
+            strides=(stride_kd, stride_kk),
+            offsets=(0, key_start),
+            block_shape=(d_model, key_tile_size),
+            order=(0, 1),
+        )
+        value_transpose_block_ptr = tl.make_block_ptr(
+            base=v_ptr + batch_index * stride_vb,
+            shape=(d_model, n_keys),
+            strides=(stride_vd, stride_vk),
+            offsets=(0, key_start),
+            block_shape=(d_model, key_tile_size),
+            order=(0, 1),
+        )
+        query_block_ptr = tl.make_block_ptr(
+            base=q_ptr + batch_index * stride_qb,
+            shape=(n_queries, d_model),
+            strides=(stride_qq, stride_qd),
+            offsets=(0, 0),
+            block_shape=(query_tile_size, d_model),
+            order=(1, 0),
+        )
+        grad_output_block_ptr = tl.make_block_ptr(
+            base=grad_output_ptr + batch_index * stride_gob,
+            shape=(n_queries, d_model),
+            strides=(stride_goq, stride_god),
+            offsets=(0, 0),
+            block_shape=(query_tile_size, d_model),
+            order=(1, 0),
+        )
+        grad_k_block_ptr = tl.make_block_ptr(
+            base=grad_k_ptr + batch_index * stride_gkb,
+            shape=(n_keys, d_model),
+            strides=(stride_gkk, stride_gkd),
+            offsets=(key_start, 0),
+            block_shape=(key_tile_size, d_model),
+            order=(1, 0),
+        )
+        grad_v_block_ptr = tl.make_block_ptr(
+            base=grad_v_ptr + batch_index * stride_gvb,
+            shape=(n_keys, d_model),
+            strides=(stride_gvk, stride_gvd),
+            offsets=(key_start, 0),
+            block_shape=(key_tile_size, d_model),
+            order=(1, 0),
+        )
+
+        key_transpose = tl.load(
+            key_transpose_block_ptr,
+            boundary_check=(0, 1),
+            padding_option="zero",
+        )
+        value_transpose = tl.load(
+            value_transpose_block_ptr,
+            boundary_check=(0, 1),
+            padding_option="zero",
+        )
+        grad_k_accumulator = tl.zeros(
+            (key_tile_size, d_model),
+            dtype=tl.float32,
+        )
+        grad_v_accumulator = tl.zeros(
+            (key_tile_size, d_model),
+            dtype=tl.float32,
+        )
+
+        key_offsets = key_start + tl.arange(0, key_tile_size)
+        valid_keys = key_offsets < n_keys
+
+        for query_start in range(0, n_queries, query_tile_size):
+            query = tl.load(
+                query_block_ptr,
+                boundary_check=(0, 1),
+                padding_option="zero",
+            )
+            grad_output = tl.load(
+                grad_output_block_ptr,
+                boundary_check=(0, 1),
+                padding_option="zero",
+            )
+
+            query_offsets = query_start + tl.arange(0, query_tile_size)
+            valid_queries = query_offsets < n_queries
+            logsumexp = tl.load(
+                logsumexp_ptr
+                + batch_index * stride_lb
+                + query_offsets * stride_lq,
+                mask=valid_queries,
+                other=0.0,
+            )
+            delta = tl.load(
+                delta_ptr
+                + batch_index * stride_db
+                + query_offsets * stride_dq,
+                mask=valid_queries,
+                other=0.0,
+            )
+
+            scores = tl.dot(query, key_transpose) * scale
+            valid_scores = valid_queries[:, None] & valid_keys[None, :]
+            if is_causal:
+                valid_scores &= query_offsets[:, None] >= key_offsets[None, :]
+            scores = tl.where(valid_scores, scores, -float("inf"))
+
+            probabilities = tl.exp(scores - logsumexp[:, None])
+            probabilities_for_dot = probabilities.to(grad_output.dtype)
+            grad_v_accumulator = tl.dot(
+                tl.trans(probabilities_for_dot),
+                grad_output,
+                acc=grad_v_accumulator,
+            )
+
+            grad_probabilities = tl.dot(
+                grad_output,
+                value_transpose,
+            )
+            grad_scores = probabilities * (
+                grad_probabilities - delta[:, None]
+            )
+            grad_scores_for_dot = grad_scores.to(query.dtype)
+            grad_k_accumulator = tl.dot(
+                tl.trans(grad_scores_for_dot),
+                query,
+                acc=grad_k_accumulator,
+            )
+
+            query_block_ptr = query_block_ptr.advance((query_tile_size, 0))
+            grad_output_block_ptr = grad_output_block_ptr.advance(
+                (query_tile_size, 0)
+            )
+
+        tl.store(
+            grad_k_block_ptr,
+            (grad_k_accumulator * scale).to(key_transpose.dtype),
+            boundary_check=(0, 1),
+        )
+        tl.store(
+            grad_v_block_ptr,
+            grad_v_accumulator.to(value_transpose.dtype),
+            boundary_check=(0, 1),
+        )
+
+
+    @triton.jit
+    def _flash_backward_dq_kernel(  #计算 dQ
+        q_ptr,
+        k_ptr,
+        v_ptr,
+        grad_output_ptr,
+        logsumexp_ptr,
+        delta_ptr,
+        grad_q_ptr,
+        stride_qb,
+        stride_qq,
+        stride_qd,
+        stride_kb,
+        stride_kk,
+        stride_kd,
+        stride_vb,
+        stride_vk,
+        stride_vd,
+        stride_gob,
+        stride_goq,
+        stride_god,
+        stride_lb,
+        stride_lq,
+        stride_db,
+        stride_dq,
+        stride_gqb,
+        stride_gqq,
+        stride_gqd,
+        n_queries,
+        n_keys,
+        scale,
+        d_model: tl.constexpr,
+        query_tile_size: tl.constexpr,
+        key_tile_size: tl.constexpr,
+        is_causal: tl.constexpr,
+    ):
+        query_tile_index = tl.program_id(0)
+        batch_index = tl.program_id(1)
+        query_start = query_tile_index * query_tile_size
+
+        query_block_ptr = tl.make_block_ptr(
+            base=q_ptr + batch_index * stride_qb,
+            shape=(n_queries, d_model),
+            strides=(stride_qq, stride_qd),
+            offsets=(query_start, 0),
+            block_shape=(query_tile_size, d_model),
+            order=(1, 0),
+        )
+        grad_output_block_ptr = tl.make_block_ptr(
+            base=grad_output_ptr + batch_index * stride_gob,
+            shape=(n_queries, d_model),
+            strides=(stride_goq, stride_god),
+            offsets=(query_start, 0),
+            block_shape=(query_tile_size, d_model),
+            order=(1, 0),
+        )
+        key_transpose_block_ptr = tl.make_block_ptr(
+            base=k_ptr + batch_index * stride_kb,
+            shape=(d_model, n_keys),
+            strides=(stride_kd, stride_kk),
+            offsets=(0, 0),
+            block_shape=(d_model, key_tile_size),
+            order=(0, 1),
+        )
+        value_transpose_block_ptr = tl.make_block_ptr(
+            base=v_ptr + batch_index * stride_vb,
+            shape=(d_model, n_keys),
+            strides=(stride_vd, stride_vk),
+            offsets=(0, 0),
+            block_shape=(d_model, key_tile_size),
+            order=(0, 1),
+        )
+        grad_q_block_ptr = tl.make_block_ptr(
+            base=grad_q_ptr + batch_index * stride_gqb,
+            shape=(n_queries, d_model),
+            strides=(stride_gqq, stride_gqd),
+            offsets=(query_start, 0),
+            block_shape=(query_tile_size, d_model),
+            order=(1, 0),
+        )
+
+        query = tl.load(
+            query_block_ptr,
+            boundary_check=(0, 1),
+            padding_option="zero",
+        )
+        grad_output = tl.load(
+            grad_output_block_ptr,
+            boundary_check=(0, 1),
+            padding_option="zero",
+        )
+
+        query_offsets = query_start + tl.arange(0, query_tile_size)
+        valid_queries = query_offsets < n_queries
+        logsumexp = tl.load(
+            logsumexp_ptr
+            + batch_index * stride_lb
+            + query_offsets * stride_lq,
+            mask=valid_queries,
+            other=0.0,
+        )
+        delta = tl.load(
+            delta_ptr
+            + batch_index * stride_db
+            + query_offsets * stride_dq,
+            mask=valid_queries,
+            other=0.0,
+        )
+        grad_q_accumulator = tl.zeros(
+            (query_tile_size, d_model),
+            dtype=tl.float32,
+        )
+
+        key_offsets = tl.arange(0, key_tile_size)
+        for key_start in range(0, n_keys, key_tile_size):
+            key_transpose = tl.load(
+                key_transpose_block_ptr,
+                boundary_check=(0, 1),
+                padding_option="zero",
+            )
+            value_transpose = tl.load(
+                value_transpose_block_ptr,
+                boundary_check=(0, 1),
+                padding_option="zero",
+            )
+
+            current_key_offsets = key_start + key_offsets
+            valid_keys = current_key_offsets < n_keys
+            scores = tl.dot(query, key_transpose) * scale
+            valid_scores = valid_queries[:, None] & valid_keys[None, :]
+            if is_causal:
+                valid_scores &= (
+                    query_offsets[:, None]
+                    >= current_key_offsets[None, :]
+                )
+            scores = tl.where(valid_scores, scores, -float("inf"))
+
+            probabilities = tl.exp(scores - logsumexp[:, None])
+            grad_probabilities = tl.dot(
+                grad_output,
+                value_transpose,
+            )
+            grad_scores = probabilities * (
+                grad_probabilities - delta[:, None]
+            )
+            grad_q_accumulator = tl.dot(
+                grad_scores.to(key_transpose.dtype),
+                tl.trans(key_transpose),
+                acc=grad_q_accumulator,
+            )
+
+            key_transpose_block_ptr = key_transpose_block_ptr.advance(
+                (0, key_tile_size)
+            )
+            value_transpose_block_ptr = value_transpose_block_ptr.advance(
+                (0, key_tile_size)
+            )
+
+        tl.store(
+            grad_q_block_ptr,
+            (grad_q_accumulator * scale).to(query.dtype),
+            boundary_check=(0, 1),
+        )
+
 else:
     _flash_forward_kernel = None
+    _flash_backward_preprocess_kernel = None
+    _flash_backward_dkdv_kernel = None
+    _flash_backward_dq_kernel = None
 
 
 class FlashAttentionTriton(torch.autograd.Function):
@@ -408,13 +825,103 @@ class FlashAttentionTriton(torch.autograd.Function):
         grad_output: torch.Tensor,
     ) -> tuple[torch.Tensor | None, ...]:
         logsumexp, q, k, v, output = ctx.saved_tensors
-        grad_q, grad_k, grad_v = _compiled_flash_backward(
-            q,
-            k,
-            v,
-            output,
-            grad_output,
-            logsumexp,
-            ctx.is_causal,
+        if (
+            triton is None
+            or _flash_backward_preprocess_kernel is None
+            or _flash_backward_dkdv_kernel is None
+            or _flash_backward_dq_kernel is None
+        ):
+            raise RuntimeError(
+                "Triton FlashAttention backward requires Triton on CUDA"
+            )
+
+        batch_size, n_queries, d_model = q.shape
+        n_keys = k.shape[1]
+        grad_output = grad_output.contiguous()
+        grad_q = torch.empty_like(q)
+        grad_k = torch.empty_like(k)
+        grad_v = torch.empty_like(v)
+        delta = torch.empty(
+            (batch_size, n_queries),
+            device=q.device,
+            dtype=torch.float32,
         )
+
+        preprocess_grid = (
+            triton.cdiv(n_queries, Q_TILE_SIZE),
+            batch_size,
+        )
+        dkdv_grid = (
+            triton.cdiv(n_keys, K_TILE_SIZE),
+            batch_size,
+        )
+        dq_grid = (
+            triton.cdiv(n_queries, Q_TILE_SIZE),
+            batch_size,
+        )
+
+        with torch.cuda.device(q.device):
+            _flash_backward_preprocess_kernel[preprocess_grid](
+                output,
+                grad_output,
+                delta,
+                *output.stride(),
+                *grad_output.stride(),
+                *delta.stride(),
+                n_queries,
+                d_model=d_model,
+                query_tile_size=Q_TILE_SIZE,
+                num_warps=4,
+            )
+            _flash_backward_dkdv_kernel[dkdv_grid](
+                q,
+                k,
+                v,
+                grad_output,
+                logsumexp,
+                delta,
+                grad_k,
+                grad_v,
+                *q.stride(),
+                *k.stride(),
+                *v.stride(),
+                *grad_output.stride(),
+                *logsumexp.stride(),
+                *delta.stride(),
+                *grad_k.stride(),
+                *grad_v.stride(),
+                n_queries,
+                n_keys,
+                d_model**-0.5,
+                d_model=d_model,
+                query_tile_size=Q_TILE_SIZE,
+                key_tile_size=K_TILE_SIZE,
+                is_causal=ctx.is_causal,
+                num_warps=4,
+            )
+            _flash_backward_dq_kernel[dq_grid](
+                q,
+                k,
+                v,
+                grad_output,
+                logsumexp,
+                delta,
+                grad_q,
+                *q.stride(),
+                *k.stride(),
+                *v.stride(),
+                *grad_output.stride(),
+                *logsumexp.stride(),
+                *delta.stride(),
+                *grad_q.stride(),
+                n_queries,
+                n_keys,
+                d_model**-0.5,
+                d_model=d_model,
+                query_tile_size=Q_TILE_SIZE,
+                key_tile_size=K_TILE_SIZE,
+                is_causal=ctx.is_causal,
+                num_warps=4,
+            )
+
         return grad_q, grad_k, grad_v, None
