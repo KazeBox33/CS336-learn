@@ -48,6 +48,49 @@ def _validate_attention_inputs(
         raise ValueError("attention dimensions must be non-empty")
 
 
+@torch.compile
+def _compiled_flash_backward( # torch.compile
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    output: torch.Tensor,
+    grad_output: torch.Tensor,
+    logsumexp: torch.Tensor,
+    is_causal: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    q_float = q.to(torch.float32)
+    k_float = k.to(torch.float32)
+    v_float = v.to(torch.float32)
+    output_float = output.to(torch.float32)
+    grad_output_float = grad_output.to(torch.float32)
+
+    scale = q.shape[-1] ** -0.5
+    scores = torch.matmul(q_float, k_float.transpose(-2, -1)) * scale
+    if is_causal:
+        query_positions = torch.arange(q.shape[1], device=q.device)
+        key_positions = torch.arange(k.shape[1], device=k.device)
+        causal_mask = query_positions[:, None] >= key_positions[None, :]  # pytorch 通过广播把两个tensor拓展
+        scores = scores.masked_fill(~causal_mask, -torch.inf)
+
+    probabilities = torch.exp(scores - logsumexp.unsqueeze(-1))
+    d_vector = torch.sum(
+        output_float * grad_output_float,
+        dim=-1,
+        keepdim=True,
+    )
+
+    grad_v = torch.matmul(probabilities.transpose(-2, -1), grad_output_float) #计算dv
+    grad_probabilities = torch.matmul( # 计算 dp
+        grad_output_float,
+        v_float.transpose(-2, -1),
+    )
+    grad_scores = probabilities * (grad_probabilities - d_vector)
+    grad_q = torch.matmul(grad_scores, k_float) * scale
+    grad_k = torch.matmul(grad_scores.transpose(-2, -1), q_float) * scale
+
+    return grad_q.to(q.dtype), grad_k.to(k.dtype), grad_v.to(v.dtype)
+
+
 class FlashAttentionPyTorch(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -132,13 +175,21 @@ class FlashAttentionPyTorch(torch.autograd.Function):
         return output
 
     @staticmethod
-    def backward(
+    def backward(  # 接入了 torch.compile 写的反向传播
         ctx: Any,
         grad_output: torch.Tensor,
     ) -> tuple[torch.Tensor | None, ...]:
-        raise NotImplementedError(
-            "The FlashAttention backward pass is not implemented yet"
+        logsumexp, q, k, v, output = ctx.saved_tensors
+        grad_q, grad_k, grad_v = _compiled_flash_backward(
+            q,
+            k,
+            v,
+            output,
+            grad_output,
+            logsumexp,
+            ctx.is_causal,
         )
+        return grad_q, grad_k, grad_v, None  # forward 输入了啥 这边就返回啥的梯度
 
 
 if triton is not None:
@@ -356,6 +407,14 @@ class FlashAttentionTriton(torch.autograd.Function):
         ctx: Any,
         grad_output: torch.Tensor,
     ) -> tuple[torch.Tensor | None, ...]:
-        raise NotImplementedError(
-            "The Triton FlashAttention backward pass is not implemented yet"
+        logsumexp, q, k, v, output = ctx.saved_tensors
+        grad_q, grad_k, grad_v = _compiled_flash_backward(
+            q,
+            k,
+            v,
+            output,
+            grad_output,
+            logsumexp,
+            ctx.is_causal,
         )
+        return grad_q, grad_k, grad_v, None
