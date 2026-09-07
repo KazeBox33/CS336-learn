@@ -57,6 +57,38 @@ Type "help", "copyright", "credits" or "license" for more information.
 
 `uv run` installs dependencies automatically as dictated in the `pyproject.toml` file.
 
+## Single-node All-Reduce benchmark
+
+Run the assignment's 12 NCCL configurations on a Linux machine with at least
+six NVIDIA GPUs:
+
+```sh
+uv run python -m cs336_systems.distributed_benchmark \
+  --backend nccl \
+  --world-sizes 2 4 6 \
+  --sizes-mib 1 10 100 1024 \
+  --warmup-steps 5 \
+  --measurement-steps 20
+```
+
+Generate the latency and bandwidth figures exclusively from the recorded JSON:
+
+```sh
+uv run python -m cs336_systems.plot_distributed_benchmark
+```
+
+For a small CPU-only correctness smoke test, use Gloo with a deliberately tiny
+tensor instead of the assignment's full data sizes:
+
+```sh
+uv run python -m cs336_systems.distributed_benchmark \
+  --backend gloo \
+  --world-sizes 2 \
+  --sizes-mib 0.001 \
+  --warmup-steps 1 \
+  --measurement-steps 2
+```
+
 ## Submitting
 
 To submit, run `./test_and_make_submission.sh` . This script will install your
