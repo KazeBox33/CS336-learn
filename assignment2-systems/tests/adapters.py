@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from cs336_systems.ddp import NaiveDDP
 from cs336_systems.flash_attention import (
     FlashAttentionPyTorch,
     FlashAttentionTriton,
@@ -52,8 +53,7 @@ def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
     Returns:
         Instance of a DDP class.
     """
-    # For example: return DDP(module)
-    raise NotImplementedError
+    return NaiveDDP(module)
 
 
 def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Optimizer):
