@@ -19,9 +19,9 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 
-DEFAULT_SIZES_MIB = [1.0, 10.0, 100.0, 1024.0]
+DEFAULT_SIZES_MIB = [1.0, 10.0, 100.0, 1024.0]  # 实验默认配置
 DEFAULT_WORLD_SIZES = [2, 4, 6]
-FLOAT32_BYTES = torch.tensor([], dtype=torch.float32).element_size()
+FLOAT32_BYTES = torch.tensor([], dtype=torch.float32).element_size()  # element_size() 返回数据占多少字节
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def mib_to_numel(size_mib: float, element_size: int = FLOAT32_BYTES) -> int:
+def mib_to_numel(size_mib: float, element_size: int = FLOAT32_BYTES) -> int:  # 把 MiB 换成元素数量
     """Convert a binary MiB size to a whole number of tensor elements."""
     if size_mib <= 0:
         raise ValueError("size_mib must be positive")
@@ -89,6 +89,7 @@ def summarize_rank_timings(
     if len(measurement_counts) != 1 or not measurement_counts or 0 in measurement_counts:
         raise ValueError("every rank must provide the same non-zero number of timings")
 
+    # 原本每行表示一个 rank 的多轮结果，转置后每行表示同一轮中所有 rank 的结果，再取其中最大值。
     critical_path_ms = [max(per_rank) for per_rank in zip(*rank_timings_ms, strict=True)]
     median_ms = statistics.median(critical_path_ms)
     algorithmic_bandwidth_gbps = tensor_bytes / (median_ms / 1000.0) / 1e9
@@ -131,17 +132,17 @@ def _all_ranks_allocated(tensor: torch.Tensor | None, device: torch.device) -> b
         dtype=torch.int32,
         device=device,
     )
-    dist.all_reduce(allocation_status, op=dist.ReduceOp.MIN)
+    dist.all_reduce(allocation_status, op=dist.ReduceOp.MIN)  # 取最小值
     return bool(allocation_status.item())
 
 
 def _verify_all_reduce(tensor: torch.Tensor, world_size: int) -> None:
-    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)  # 相加起来
     _synchronize(tensor.device)
 
     expected = world_size * (world_size + 1) / 2
-    sample = tensor[: min(16, tensor.numel())]
-    if not torch.allclose(sample, torch.full_like(sample, expected)):
+    sample = tensor[: min(16, tensor.numel())]  # 只检查前 16 个元素
+    if not torch.allclose(sample, torch.full_like(sample, expected)):  # 比较结果
         raise RuntimeError("All-Reduce correctness check failed")
 
 
@@ -159,7 +160,7 @@ def _measure_all_reduce(
     dist.barrier()
     local_timings_ms: list[float] = []
     for _ in range(measurement_steps):
-        tensor.fill_(1.0)
+        tensor.fill_(1.0)  # 原地修改
         _synchronize(tensor.device)
 
         start = time.perf_counter()
@@ -177,7 +178,7 @@ def _gather_rank_timings(
 ) -> list[list[float]]:
     local = torch.tensor(local_timings_ms, dtype=torch.float64, device=device)
     gathered = [torch.empty_like(local) for _ in range(world_size)]
-    dist.all_gather(gathered, local)
+    dist.all_gather(gathered, local)  # 收集所有 rank 的结果
     return [timings.cpu().tolist() for timings in gathered]
 
 
@@ -213,9 +214,9 @@ def _worker(
         for size_mib in sizes_mib:
             num_elements = mib_to_numel(size_mib)
             tensor_bytes = num_elements * FLOAT32_BYTES
-            tensor = _allocate_tensor(num_elements, device, rank)
+            tensor = _allocate_tensor(num_elements, device, rank)  # 创建包含 num_elements 个元素的本地张量
 
-            if not _all_ranks_allocated(tensor, device):
+            if not _all_ranks_allocated(tensor, device):  # 任一 rank 失败时，所有 rank 都会得到 0
                 if rank == 0:
                     records.append(
                         {
