@@ -89,6 +89,25 @@ uv run python -m cs336_systems.distributed_benchmark \
   --measurement-steps 2
 ```
 
+## Naive DDP benchmark
+
+Measure the full XL training step and the individual-gradient communication
+section on one node with two NVIDIA GPUs:
+
+```sh
+uv run python -m cs336_systems.naive_ddp_benchmark \
+  --backend nccl \
+  --world-size 2 \
+  --model-size xl \
+  --global-batch-size 4 \
+  --context-length 512 \
+  --warmup-steps 5 \
+  --measurement-steps 10
+```
+
+The script records raw per-rank timings and critical-path summary statistics in
+`results/distributed/naive_ddp_benchmark.json`.
+
 ## Submitting
 
 To submit, run `./test_and_make_submission.sh` . This script will install your

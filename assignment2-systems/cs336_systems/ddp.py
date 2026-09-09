@@ -29,7 +29,7 @@ class NaiveDDP(nn.Module):
     def forward(self, *inputs: Any, **kwargs: Any) -> Any:
         return self.module(*inputs, **kwargs)
 
-    def finish_gradient_synchronization(self) -> None:
+    def finish_gradient_synchronization(self) -> None:  # 梯度同步
         """Average every available parameter gradient across all ranks."""
         world_size = dist.get_world_size()
         with torch.no_grad():
