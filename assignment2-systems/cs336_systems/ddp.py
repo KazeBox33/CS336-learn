@@ -14,17 +14,27 @@ class NaiveDDP(nn.Module):
 
     def __init__(self, module: nn.Module) -> None:
         super().__init__()
-        if not dist.is_initialized():
+        if not dist.is_initialized():  # 先检查一下有没有初始化
             raise RuntimeError("NaiveDDP requires an initialized process group")
 
         self.module = module
         self._broadcast_module_state()
 
-    def _broadcast_module_state(self) -> None:
+    def _broadcast_module_state(self) -> None:  # 广播种子
         """Copy rank 0's parameters and buffers to every process."""
-        with torch.no_grad():
-            for tensor in self.module.state_dict().values():
-                dist.broadcast(tensor, src=0)
+        with torch.no_grad():  # 初始化同步不是训练计算，不需要建立 autograd graph
+            for tensor in self.module.state_dict().values():  # state_dict 不只有参数，还有 buffer
+                dist.broadcast(tensor, src=0)  # 以 rank 0 为源广播
 
     def forward(self, *inputs: Any, **kwargs: Any) -> Any:
         return self.module(*inputs, **kwargs)
+
+    def finish_gradient_synchronization(self) -> None:
+        """Average every available parameter gradient across all ranks."""
+        world_size = dist.get_world_size()
+        with torch.no_grad():
+            for parameter in self.module.parameters():
+                if parameter.grad is None:
+                    continue
+                dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
+                parameter.grad.div_(world_size)

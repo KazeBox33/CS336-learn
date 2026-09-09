@@ -38,14 +38,7 @@ def get_flashattention_autograd_function_triton() -> type:
 
 def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
     """
-    Returns a torch.nn.Module container that handles
-    parameter broadcasting and gradient synchronization for
-    distributed data parallel training.
-
-    This container should overlaps communication with backprop computation
-    by asynchronously communicating gradients as they are ready
-    in the backward pass. The gradient for each parameter tensor
-    is individually communicated.
+    Return the current distributed-data-parallel container.
 
     Args:
         module: torch.nn.Module
@@ -56,7 +49,7 @@ def get_ddp(module: torch.nn.Module) -> torch.nn.Module:
     return NaiveDDP(module)
 
 
-def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Optimizer):
+def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Optimizer) -> None:
     """
     Code to run after the backward pass is completed, but before we take
     an optimizer step.
@@ -67,8 +60,9 @@ def ddp_on_after_backward(ddp_model: torch.nn.Module, optimizer: torch.optim.Opt
         optimizer: torch.optim.Optimizer
             Optimizer being used with the DDP-wrapped model.
     """
-    # For example: ddp_model.finish_gradient_synchronization()
-    raise NotImplementedError
+    if not isinstance(ddp_model, NaiveDDP):
+        raise TypeError("ddp_model must be a NaiveDDP instance")
+    ddp_model.finish_gradient_synchronization()
 
 
 def get_fsdp(module: torch.nn.Module, compute_dtype: torch.dtype | None = None) -> torch.nn.Module:
