@@ -38,3 +38,41 @@ class NaiveDDP(nn.Module):
                     continue
                 dist.all_reduce(parameter.grad, op=dist.ReduceOp.SUM)
                 parameter.grad.div_(world_size)
+
+
+class FlatGradientDDP(NaiveDDP):
+    """Synchronize all dense parameter gradients with one all-reduce."""
+
+    def finish_gradient_synchronization(self) -> None:
+        gradients = [
+            parameter.grad
+            for parameter in self.module.parameters()
+            if parameter.grad is not None
+        ]
+        if not gradients:
+            return
+
+        reference_gradient = gradients[0]
+        if any(
+            gradient.device != reference_gradient.device
+            or gradient.dtype != reference_gradient.dtype
+            for gradient in gradients[1:]
+        ):
+            raise RuntimeError(
+                "FlatGradientDDP requires all gradients to have the same device and dtype"
+            )
+
+        with torch.no_grad():
+            flat_gradient = torch.cat(
+                [gradient.reshape(-1) for gradient in gradients]
+            )
+            dist.all_reduce(flat_gradient, op=dist.ReduceOp.SUM)
+            flat_gradient.div_(dist.get_world_size())
+
+            offset = 0
+            for gradient in gradients:
+                numel = gradient.numel()
+                gradient.copy_(
+                    flat_gradient[offset : offset + numel].view_as(gradient)
+                )
+                offset += numel
