@@ -1,4 +1,4 @@
-"""Benchmark training with the individual-gradient NaiveDDP implementation."""
+"""Benchmark training with individual or flattened-gradient DDP."""
 
 from __future__ import annotations
 
@@ -21,17 +21,29 @@ from cs336_basics.nn_utils import cross_entropy
 from cs336_basics.optimizer import AdamW
 
 from cs336_systems.benchmark import MODEL_CONFIGS
-from cs336_systems.ddp import NaiveDDP
+from cs336_systems.ddp import FlatGradientDDP, NaiveDDP
+
+
+DDP_IMPLEMENTATIONS: dict[str, type[NaiveDDP]] = {
+    "naive": NaiveDDP,
+    "flat": FlatGradientDDP,
+}
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Benchmark naïve data-parallel training.")
+    parser = argparse.ArgumentParser(description="Benchmark data-parallel training.")
     parser.add_argument("--model-size", choices=MODEL_CONFIGS, default="xl")
     parser.add_argument("--global-batch-size", type=int, default=4)
     parser.add_argument("--context-length", type=int, default=512)
     parser.add_argument("--vocab-size", type=int, default=10_000)
     parser.add_argument("--world-size", type=int, default=2)
     parser.add_argument("--backend", choices=["nccl", "gloo"], default="nccl")
+    parser.add_argument(
+        "--ddp-implementation",
+        choices=DDP_IMPLEMENTATIONS,
+        default="naive",
+        help="gradient synchronization strategy to benchmark",
+    )
     parser.add_argument("--warmup-steps", type=int, default=5)
     parser.add_argument("--measurement-steps", type=int, default=10)
     parser.add_argument("--seed", type=int, default=0)
@@ -106,7 +118,7 @@ def _run_training_step(
     communication_start = time.perf_counter()
     model.finish_gradient_synchronization()
     _synchronize(device)
-    communication_seconds = time.perf_counter() - communication_start
+    communication_seconds = time.perf_counter() - communication_start  # 计算通信的时间
 
     optimizer.step()
     _synchronize(device)
@@ -174,6 +186,7 @@ def _worker(
     rank: int,
     world_size: int,
     backend: str,
+    ddp_implementation: str,
     model_size: str,
     global_batch_size: int,
     context_length: int,
@@ -201,8 +214,9 @@ def _worker(
         timeout=timedelta(minutes=10),
     )
     try:
-        torch.manual_seed(seed + rank)
-        model = NaiveDDP(
+        torch.manual_seed(seed + rank)  # 不同rank 设置不同的seed
+        ddp_class = DDP_IMPLEMENTATIONS[ddp_implementation]
+        model = ddp_class( # 构造的时候会同步的
             _build_model(
                 model_size,
                 vocab_size=vocab_size,
@@ -213,7 +227,7 @@ def _worker(
         model.train()
         optimizer = AdamW(model.parameters())
 
-        local_batch_size = global_batch_size // world_size
+        local_batch_size = global_batch_size // world_size # 拆分global_batch_size
         torch.manual_seed(seed + 10_000 + rank)
         inputs = torch.randint(
             0,
@@ -250,7 +264,8 @@ def _worker(
         if rank == 0:
             parameter_count = sum(parameter.numel() for parameter in model.parameters())
             result: dict[str, Any] = {
-                "benchmark": "naive_ddp_training",
+                "benchmark": "ddp_training",
+                "ddp_implementation": ddp_implementation,
                 "timestamp_utc": datetime.now(UTC).isoformat(),
                 "hostname": platform.node(),
                 "platform": platform.platform(),
@@ -302,6 +317,7 @@ def main() -> None:
         args=(
             args.world_size,
             args.backend,
+            args.ddp_implementation,
             args.model_size,
             args.global_batch_size,
             args.context_length,
@@ -318,6 +334,7 @@ def main() -> None:
     )
 
     result = json.loads(args.output_path.read_text(encoding="utf-8"))
+    print(f"DDP implementation: {result['ddp_implementation']}")
     print(f"model: {result['model_size']} ({result['parameter_count']:,} parameters)")
     print(f"world size: {result['world_size']}")
     print(f"global/local batch size: {result['global_batch_size']}/{result['local_batch_size']}")

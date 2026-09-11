@@ -108,6 +108,26 @@ uv run python -m cs336_systems.naive_ddp_benchmark \
 The script records raw per-rank timings and critical-path summary statistics in
 `results/distributed/naive_ddp_benchmark.json`.
 
+## Flat-gradient DDP comparison
+
+Run the individual-gradient and single-flat-buffer implementations sequentially
+with the same one-node, two-GPU configuration:
+
+```sh
+uv run python -m cs336_systems.compare_ddp_benchmarks \
+  --backend nccl \
+  --world-size 2 \
+  --model-size xl \
+  --global-batch-size 4 \
+  --context-length 512 \
+  --warmup-steps 5 \
+  --measurement-steps 10
+```
+
+The runner writes each raw result plus `comparison.json`, `comparison.csv`, and
+the generated assignment table and commentary in `comparison.md` under
+`results/distributed/flat_ddp_comparison/`.
+
 ## Submitting
 
 To submit, run `./test_and_make_submission.sh` . This script will install your
