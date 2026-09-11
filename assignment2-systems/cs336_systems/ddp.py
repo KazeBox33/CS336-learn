@@ -76,3 +76,37 @@ class FlatGradientDDP(NaiveDDP):
                     flat_gradient[offset : offset + numel].view_as(gradient)
                 )
                 offset += numel
+
+
+class OverlapDDP(NaiveDDP):
+    """Overlap backward computation with per-parameter gradient communication."""
+
+    def __init__(self, module: nn.Module) -> None:
+        super().__init__(module)
+
+        self._pending_works: list[dist.Work] = []
+        self._hook_handles = [
+            parameter.register_post_accumulate_grad_hook(
+                self._on_gradient_ready
+            )
+            for parameter in self.module.parameters()
+            if parameter.requires_grad
+        ]
+
+    def _on_gradient_ready(self, parameter: torch.Tensor) -> None:
+        if parameter.grad is None:
+            raise RuntimeError("gradient hook ran before gradient accumulation")
+
+        with torch.no_grad():
+            parameter.grad.div_(dist.get_world_size())
+            work = dist.all_reduce(
+                parameter.grad,
+                op=dist.ReduceOp.SUM,
+                async_op=True,
+            )
+        self._pending_works.append(work)
+
+    def finish_gradient_synchronization(self) -> None:
+        for work in self._pending_works:
+            work.wait()
+        self._pending_works.clear()
