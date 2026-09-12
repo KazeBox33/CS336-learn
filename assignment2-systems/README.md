@@ -128,6 +128,52 @@ The runner writes each raw result plus `comparison.json`, `comparison.csv`, and
 the generated assignment table and commentary in `comparison.md` under
 `results/distributed/flat_ddp_comparison/`.
 
+## Overlapped DDP benchmark
+
+Compare the end-to-end step time of per-parameter synchronization, one flat
+gradient collective, and per-parameter communication overlapped with backward:
+
+```sh
+uv run python -m cs336_systems.compare_ddp_benchmarks \
+  --implementations naive flat overlap \
+  --backend nccl \
+  --world-size 2 \
+  --model-size xl \
+  --global-batch-size 4 \
+  --context-length 512 \
+  --warmup-steps 5 \
+  --measurement-steps 10
+```
+
+Results are written under `results/distributed/overlap_ddp_comparison/`. For
+the overlap implementation, the post-backward timing measures only the exposed
+wait for outstanding collectives; use full step time for comparisons.
+
+The training step contains NVTX ranges for forward, backward, gradient
+synchronization, and the optimizer. On the NVIDIA Linux machine, capture the
+baseline and overlap timelines separately with Nsight Systems:
+
+```sh
+nsys profile --trace=cuda,nvtx,nccl --force-overwrite=true \
+  --output=results/distributed/overlap_ddp_comparison/naive_trace \
+  uv run python -m cs336_systems.naive_ddp_benchmark \
+    --ddp-implementation naive --backend nccl --world-size 2 \
+    --model-size xl --global-batch-size 4 --context-length 512 \
+    --warmup-steps 1 --measurement-steps 1 \
+    --output-path results/distributed/overlap_ddp_comparison/naive_profile.json
+
+nsys profile --trace=cuda,nvtx,nccl --force-overwrite=true \
+  --output=results/distributed/overlap_ddp_comparison/overlap_trace \
+  uv run python -m cs336_systems.naive_ddp_benchmark \
+    --ddp-implementation overlap --backend nccl --world-size 2 \
+    --model-size xl --global-batch-size 4 --context-length 512 \
+    --warmup-steps 1 --measurement-steps 1 \
+    --output-path results/distributed/overlap_ddp_comparison/overlap_profile.json
+```
+
+Open the generated `.nsys-rep` files in Nsight Systems and capture the CUDA,
+NCCL, and NVTX rows around the measured training step.
+
 ## Submitting
 
 To submit, run `./test_and_make_submission.sh` . This script will install your

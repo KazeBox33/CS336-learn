@@ -27,7 +27,15 @@ def _result(
         "warmup_steps": 5,
         "measurement_steps": 10,
         "step_mean_ms": step_mean_ms,
+        "step_std_ms": 1.0,
         "communication_mean_ms": communication_mean_ms,
+        "communication_std_ms": 0.5,
+        "communication_fraction_pct": communication_mean_ms / step_mean_ms * 100.0,
+        "communication_timing_scope": (
+            "post_backward_wait"
+            if implementation == "overlap"
+            else "complete_post_backward_synchronization"
+        ),
     }
 
 
@@ -63,15 +71,57 @@ def test_build_comparison_rejects_different_configurations() -> None:
         build_comparison({"naive": naive, "flat": flat})
 
 
+def test_build_comparison_uses_step_time_for_overlap() -> None:
+    comparison = build_comparison(
+        {
+            "naive": _result(
+                "naive",
+                step_mean_ms=120.0,
+                communication_mean_ms=40.0,
+            ),
+            "flat": _result(
+                "flat",
+                step_mean_ms=100.0,
+                communication_mean_ms=10.0,
+            ),
+            "overlap": _result(
+                "overlap",
+                step_mean_ms=80.0,
+                communication_mean_ms=2.0,
+            ),
+        }
+    )
+
+    overlap = comparison["comparison"]["by_implementation"]["overlap"]
+    assert overlap["step_speedup_vs_naive"] == pytest.approx(1.5)
+    assert overlap["step_time_reduction_pct_vs_naive"] == pytest.approx(100.0 / 3.0)
+
+
 def test_format_markdown_report_uses_comparison_results() -> None:
     naive = _result("naive", step_mean_ms=120.0, communication_mean_ms=40.0)
     flat = _result("flat", step_mean_ms=100.0, communication_mean_ms=10.0)
-    naive["communication_fraction_pct"] = 100.0 / 3.0
-    flat["communication_fraction_pct"] = 10.0
 
     report = format_markdown_report(build_comparison({"naive": naive, "flat": flat}))
 
-    assert "| Per-parameter | 120.000 | 40.000 | 33.33% |" in report
-    assert "| Flat-gradient | 100.000 | 10.000 | 10.00% |" in report
+    assert "| Per-parameter | 120.000 | 1.000 | 40.000 |" in report
+    assert "| Flat-gradient | 100.000 | 1.000 | 10.000 |" in report
     assert "75.00% reduction" in report
     assert "1.200x relative speed" in report
+
+
+def test_format_markdown_report_includes_overlap() -> None:
+    results = {
+        "naive": _result("naive", step_mean_ms=120.0, communication_mean_ms=40.0),
+        "flat": _result("flat", step_mean_ms=100.0, communication_mean_ms=10.0),
+        "overlap": _result(
+            "overlap",
+            step_mean_ms=80.0,
+            communication_mean_ms=2.0,
+        ),
+    }
+
+    report = format_markdown_report(build_comparison(results))
+
+    assert "# Overlapped DDP comparison" in report
+    assert "| Overlapped per-parameter | 80.000 | 1.000 | 2.000 |" in report
+    assert "1.500x relative speed" in report

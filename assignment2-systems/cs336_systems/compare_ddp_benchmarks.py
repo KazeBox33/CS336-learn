@@ -1,4 +1,4 @@
-"""Compare per-parameter and flattened-gradient DDP synchronization."""
+"""Compare the educational DDP synchronization strategies."""
 
 from __future__ import annotations
 
@@ -13,7 +13,13 @@ from typing import Any
 from cs336_systems.benchmark import MODEL_CONFIGS
 
 
-IMPLEMENTATIONS = ("naive", "flat")
+AVAILABLE_IMPLEMENTATIONS = ("naive", "flat", "overlap")
+DEFAULT_IMPLEMENTATIONS = ("naive", "flat")
+IMPLEMENTATION_LABELS = {
+    "naive": "Per-parameter",
+    "flat": "Flat-gradient",
+    "overlap": "Overlapped per-parameter",
+}
 COMPARABLE_FIELDS = (
     "backend",
     "model_size",
@@ -30,7 +36,7 @@ COMPARABLE_FIELDS = (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Compare individual and flattened-gradient DDP benchmarks."
+        description="Compare educational DDP training implementations."
     )
     parser.add_argument("--model-size", choices=MODEL_CONFIGS, default="xl")
     parser.add_argument("--global-batch-size", type=int, default=4)
@@ -43,16 +49,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--master-addr", default="127.0.0.1")
     parser.add_argument(
+        "--implementations",
+        nargs="+",
+        choices=AVAILABLE_IMPLEMENTATIONS,
+        default=list(DEFAULT_IMPLEMENTATIONS),
+        help="implementations to run sequentially; naive is the comparison baseline",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("results/distributed/flat_ddp_comparison"),
+        default=None,
     )
     return parser.parse_args()
 
 
 def _validate_comparable_results(results: dict[str, dict[str, Any]]) -> None:
-    if set(results) != set(IMPLEMENTATIONS):
-        raise ValueError(f"results must contain exactly {IMPLEMENTATIONS}")
+    if "naive" not in results:
+        raise ValueError("results must contain the naive baseline")
+    if unknown := set(results) - set(AVAILABLE_IMPLEMENTATIONS):
+        raise ValueError(f"unknown DDP implementations: {sorted(unknown)}")
 
     for implementation, result in results.items():
         if result.get("ddp_implementation") != implementation:
@@ -62,45 +77,78 @@ def _validate_comparable_results(results: dict[str, dict[str, Any]]) -> None:
             )
 
     baseline = results["naive"]
-    for field in COMPARABLE_FIELDS:
-        if results["flat"].get(field) != baseline.get(field):
-            raise ValueError(f"benchmark results differ in {field!r}")
+    for implementation, result in results.items():
+        if implementation == "naive":
+            continue
+        for field in COMPARABLE_FIELDS:
+            if result.get(field) != baseline.get(field):
+                raise ValueError(
+                    f"benchmark results for {implementation!r} differ in {field!r}"
+                )
 
 
 def build_comparison(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    """Build summary metrics from two benchmark result documents."""
+    """Build summary metrics from comparable benchmark result documents."""
     _validate_comparable_results(results)
     naive = results["naive"]
-    flat = results["flat"]
-
     naive_step_ms = float(naive["step_mean_ms"])
-    flat_step_ms = float(flat["step_mean_ms"])
-    naive_communication_ms = float(naive["communication_mean_ms"])
-    flat_communication_ms = float(flat["communication_mean_ms"])
-    if min(
-        naive_step_ms,
-        flat_step_ms,
-        naive_communication_ms,
-        flat_communication_ms,
-    ) <= 0:
-        raise ValueError("mean timing values must be positive")
+    if naive_step_ms <= 0:
+        raise ValueError("mean step timing values must be positive")
 
-    return {
-        "benchmark": "minimal_ddp_flat_comparison",
-        "configuration": {field: naive[field] for field in COMPARABLE_FIELDS},
-        "results": results,
-        "comparison": {
-            "step_speedup": naive_step_ms / flat_step_ms,
-            "communication_speedup": naive_communication_ms / flat_communication_ms,
-            "step_time_reduction_pct": (naive_step_ms - flat_step_ms)
+    by_implementation: dict[str, dict[str, float]] = {}
+    for implementation, result in results.items():
+        if implementation == "naive":
+            continue
+        step_ms = float(result["step_mean_ms"])
+        if step_ms <= 0:
+            raise ValueError("mean step timing values must be positive")
+        by_implementation[implementation] = {
+            "step_speedup_vs_naive": naive_step_ms / step_ms,
+            "step_time_reduction_pct_vs_naive": (
+                naive_step_ms - step_ms
+            )
             / naive_step_ms
             * 100.0,
-            "communication_time_reduction_pct": (
-                naive_communication_ms - flat_communication_ms
-            )
-            / naive_communication_ms
-            * 100.0,
-        },
+        }
+
+    comparison_metrics: dict[str, Any] = {
+        "by_implementation": by_implementation,
+    }
+    if "flat" in results:
+        flat = results["flat"]
+        naive_communication_ms = float(naive["communication_mean_ms"])
+        flat_communication_ms = float(flat["communication_mean_ms"])
+        if min(naive_communication_ms, flat_communication_ms) <= 0:
+            raise ValueError("mean communication timing values must be positive")
+
+        # Keep the original flat-DDP fields for compatibility with existing results.
+        comparison_metrics.update(
+            {
+                "step_speedup": by_implementation["flat"][
+                    "step_speedup_vs_naive"
+                ],
+                "communication_speedup": naive_communication_ms
+                / flat_communication_ms,
+                "step_time_reduction_pct": by_implementation["flat"][
+                    "step_time_reduction_pct_vs_naive"
+                ],
+                "communication_time_reduction_pct": (
+                    naive_communication_ms - flat_communication_ms
+                )
+                / naive_communication_ms
+                * 100.0,
+            }
+        )
+
+    return {
+        "benchmark": (
+            "ddp_overlap_comparison"
+            if "overlap" in results
+            else "minimal_ddp_flat_comparison"
+        ),
+        "configuration": {field: naive[field] for field in COMPARABLE_FIELDS},
+        "results": results,
+        "comparison": comparison_metrics,
     }
 
 
@@ -150,24 +198,30 @@ def _write_csv(comparison: dict[str, Any], output_path: Path) -> None:
                 "implementation",
                 "step_mean_ms",
                 "step_std_ms",
-                "communication_mean_ms",
-                "communication_std_ms",
-                "communication_fraction_pct",
+                "post_backward_sync_or_wait_mean_ms",
+                "post_backward_sync_or_wait_std_ms",
+                "post_backward_sync_or_wait_fraction_pct",
+                "timing_scope",
             ),
         )
         writer.writeheader()
-        for implementation in IMPLEMENTATIONS:
+        for implementation in comparison["results"]:
             result = comparison["results"][implementation]
             writer.writerow(
                 {
                     "implementation": implementation,
                     "step_mean_ms": result["step_mean_ms"],
                     "step_std_ms": result["step_std_ms"],
-                    "communication_mean_ms": result["communication_mean_ms"],
-                    "communication_std_ms": result["communication_std_ms"],
-                    "communication_fraction_pct": result[
+                    "post_backward_sync_or_wait_mean_ms": result[
+                        "communication_mean_ms"
+                    ],
+                    "post_backward_sync_or_wait_std_ms": result[
+                        "communication_std_ms"
+                    ],
+                    "post_backward_sync_or_wait_fraction_pct": result[
                         "communication_fraction_pct"
                     ],
+                    "timing_scope": result["communication_timing_scope"],
                 }
             )
 
@@ -175,80 +229,109 @@ def _write_csv(comparison: dict[str, Any], output_path: Path) -> None:
 def format_markdown_report(comparison: dict[str, Any]) -> str:
     """Format the assignment table and commentary from structured results."""
     naive = comparison["results"]["naive"]
-    flat = comparison["results"]["flat"]
     metrics = comparison["comparison"]
 
     def describe_change(value: float) -> str:
         direction = "reduction" if value >= 0 else "increase"
         return f"{abs(value):.2f}% {direction}"
 
-    return "\n".join(
-        [
-            "# Flat-gradient DDP comparison",
-            "",
-            "| Implementation | Step mean (ms) | Communication mean (ms) | Communication share |",
-            "| --- | ---: | ---: | ---: |",
-            (
-                f"| Per-parameter | {naive['step_mean_ms']:.3f} | "
-                f"{naive['communication_mean_ms']:.3f} | "
-                f"{naive['communication_fraction_pct']:.2f}% |"
-            ),
-            (
-                f"| Flat-gradient | {flat['step_mean_ms']:.3f} | "
-                f"{flat['communication_mean_ms']:.3f} | "
-                f"{flat['communication_fraction_pct']:.2f}% |"
-            ),
-            "",
-            (
-                "Flattening gradients into one collective changed mean communication "
-                f"time from {naive['communication_mean_ms']:.3f} ms to "
-                f"{flat['communication_mean_ms']:.3f} ms, a "
-                f"{describe_change(metrics['communication_time_reduction_pct'])}."
-            ),
-            (
-                f"Mean training-step time changed from {naive['step_mean_ms']:.3f} ms "
-                f"to {flat['step_mean_ms']:.3f} ms "
-                f"({metrics['step_speedup']:.3f}x relative speed)."
-            ),
-            "",
-        ]
+    title = (
+        "# Overlapped DDP comparison"
+        if "overlap" in comparison["results"]
+        else "# Flat-gradient DDP comparison"
     )
+    lines = [
+        title,
+        "",
+        "| Implementation | Step mean (ms) | Step std (ms) | Post-backward sync/wait (ms) |",
+        "| --- | ---: | ---: | ---: |",
+    ]
+    for implementation, result in comparison["results"].items():
+        lines.append(
+            f"| {IMPLEMENTATION_LABELS[implementation]} | "
+            f"{result['step_mean_ms']:.3f} | {result['step_std_ms']:.3f} | "
+            f"{result['communication_mean_ms']:.3f} |"
+        )
+    lines.append("")
+
+    if "flat" in comparison["results"]:
+        flat = comparison["results"]["flat"]
+        lines.append(
+            "Flattening gradients into one collective changed mean communication "
+            f"time from {naive['communication_mean_ms']:.3f} ms to "
+            f"{flat['communication_mean_ms']:.3f} ms, a "
+            f"{describe_change(metrics['communication_time_reduction_pct'])}."
+        )
+    if "overlap" in comparison["results"]:
+        overlap = comparison["results"]["overlap"]
+        overlap_metrics = metrics["by_implementation"]["overlap"]
+        lines.append(
+            f"Mean training-step time changed from {naive['step_mean_ms']:.3f} ms "
+            f"with per-parameter synchronization to "
+            f"{overlap['step_mean_ms']:.3f} ms with overlap "
+            f"({overlap_metrics['step_speedup_vs_naive']:.3f}x relative speed)."
+        )
+    elif "flat" in comparison["results"]:
+        flat = comparison["results"]["flat"]
+        lines.append(
+            f"Mean training-step time changed from {naive['step_mean_ms']:.3f} ms "
+            f"to {flat['step_mean_ms']:.3f} ms "
+            f"({metrics['step_speedup']:.3f}x relative speed)."
+        )
+
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _print_summary(comparison: dict[str, Any]) -> None:
-    print("implementation | step (ms) | communication (ms) | communication (%)")
-    for implementation in IMPLEMENTATIONS:
+    print("implementation | step (ms) | post-backward sync/wait (ms) | scope")
+    for implementation in comparison["results"]:
         result = comparison["results"][implementation]
         print(
             f"{implementation:>14} | "
             f"{result['step_mean_ms']:>9.3f} | "
             f"{result['communication_mean_ms']:>18.3f} | "
-            f"{result['communication_fraction_pct']:>17.2f}"
+            f"{result['communication_timing_scope']}"
         )
 
     metrics = comparison["comparison"]
-    print(f"step speedup: {metrics['step_speedup']:.3f}x")
-    print(f"communication speedup: {metrics['communication_speedup']:.3f}x")
+    for implementation, implementation_metrics in metrics[
+        "by_implementation"
+    ].items():
+        print(
+            f"{implementation} step speedup vs naive: "
+            f"{implementation_metrics['step_speedup_vs_naive']:.3f}x"
+        )
 
 
 def main() -> None:
     args = parse_args()
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    if len(args.implementations) != len(set(args.implementations)):
+        raise ValueError("implementations must not contain duplicates")
+    if "naive" not in args.implementations:
+        raise ValueError("implementations must include naive as the baseline")
+
+    output_dir = args.output_dir or Path(
+        "results/distributed/overlap_ddp_comparison"
+        if "overlap" in args.implementations
+        else "results/distributed/flat_ddp_comparison"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     results = {
         implementation: _run_benchmark(
             args,
             implementation,
-            args.output_dir / f"{implementation}.json",
+            output_dir / f"{implementation}.json",
         )
-        for implementation in IMPLEMENTATIONS
+        for implementation in args.implementations
     }
     comparison = build_comparison(results)
 
-    comparison_path = args.output_dir / "comparison.json"
+    comparison_path = output_dir / "comparison.json"
     comparison_path.write_text(json.dumps(comparison, indent=2), encoding="utf-8")
-    _write_csv(comparison, args.output_dir / "comparison.csv")
-    (args.output_dir / "comparison.md").write_text(
+    _write_csv(comparison, output_dir / "comparison.csv")
+    (output_dir / "comparison.md").write_text(
         format_markdown_report(comparison),
         encoding="utf-8",
     )

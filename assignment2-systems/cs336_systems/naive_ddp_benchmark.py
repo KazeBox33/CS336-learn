@@ -1,4 +1,4 @@
-"""Benchmark training with individual or flattened-gradient DDP."""
+"""Benchmark training with several educational DDP implementations."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import platform
 import socket
 import statistics
 import time
+from contextlib import AbstractContextManager, nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -21,12 +22,13 @@ from cs336_basics.nn_utils import cross_entropy
 from cs336_basics.optimizer import AdamW
 
 from cs336_systems.benchmark import MODEL_CONFIGS
-from cs336_systems.ddp import FlatGradientDDP, NaiveDDP
+from cs336_systems.ddp import FlatGradientDDP, NaiveDDP, OverlapDDP
 
 
 DDP_IMPLEMENTATIONS: dict[str, type[NaiveDDP]] = {
     "naive": NaiveDDP,
     "flat": FlatGradientDDP,
+    "overlap": OverlapDDP,
 }
 
 
@@ -99,6 +101,15 @@ def _synchronize(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
+def _nvtx_range(
+    message: str,
+    device: torch.device,
+) -> AbstractContextManager[None]:
+    if device.type == "cuda":
+        return torch.cuda.nvtx.range(message)
+    return nullcontext()
+
+
 def _run_training_step(
     model: NaiveDDP,
     optimizer: AdamW,
@@ -109,19 +120,26 @@ def _run_training_step(
     _synchronize(device)
     step_start = time.perf_counter()
 
-    optimizer.zero_grad(set_to_none=True)
-    logits = model(inputs)
-    loss = cross_entropy(logits, targets)
-    loss.backward()
+    with _nvtx_range("training_step", device):
+        with _nvtx_range("zero_grad", device):
+            optimizer.zero_grad(set_to_none=True)
+        with _nvtx_range("forward", device):
+            logits = model(inputs)
+            loss = cross_entropy(logits, targets)
+        with _nvtx_range("backward", device):
+            loss.backward()
 
-    _synchronize(device)
-    communication_start = time.perf_counter()
-    model.finish_gradient_synchronization()
-    _synchronize(device)
-    communication_seconds = time.perf_counter() - communication_start  # 计算通信的时间
+        if not isinstance(model, OverlapDDP):
+            _synchronize(device)
+        communication_start = time.perf_counter()
+        with _nvtx_range("finish_gradient_synchronization", device):
+            model.finish_gradient_synchronization()
+            _synchronize(device)
+        communication_seconds = time.perf_counter() - communication_start  # 计算通信的时间
 
-    optimizer.step()
-    _synchronize(device)
+        with _nvtx_range("optimizer_step", device):
+            optimizer.step()
+        _synchronize(device)
     step_seconds = time.perf_counter() - step_start
     return step_seconds * 1000.0, communication_seconds * 1000.0
 
@@ -216,7 +234,7 @@ def _worker(
     try:
         torch.manual_seed(seed + rank)  # 不同rank 设置不同的seed
         ddp_class = DDP_IMPLEMENTATIONS[ddp_implementation]
-        model = ddp_class( # 构造的时候会同步的
+        model = ddp_class(  # 构造的时候会同步的
             _build_model(
                 model_size,
                 vocab_size=vocab_size,
@@ -227,7 +245,7 @@ def _worker(
         model.train()
         optimizer = AdamW(model.parameters())
 
-        local_batch_size = global_batch_size // world_size # 拆分global_batch_size
+        local_batch_size = global_batch_size // world_size  # 拆分global_batch_size
         torch.manual_seed(seed + 10_000 + rank)
         inputs = torch.randint(
             0,
@@ -266,6 +284,11 @@ def _worker(
             result: dict[str, Any] = {
                 "benchmark": "ddp_training",
                 "ddp_implementation": ddp_implementation,
+                "communication_timing_scope": (
+                    "post_backward_wait"
+                    if ddp_implementation == "overlap"
+                    else "complete_post_backward_synchronization"
+                ),
                 "timestamp_utc": datetime.now(UTC).isoformat(),
                 "hostname": platform.node(),
                 "platform": platform.platform(),
@@ -339,8 +362,13 @@ def main() -> None:
     print(f"world size: {result['world_size']}")
     print(f"global/local batch size: {result['global_batch_size']}/{result['local_batch_size']}")
     print(f"step: {result['step_mean_ms']:.3f} +/- {result['step_std_ms']:.3f} ms")
+    communication_label = (
+        "post-backward synchronization wait"
+        if result["communication_timing_scope"] == "post_backward_wait"
+        else "gradient communication"
+    )
     print(
-        "gradient communication: "
+        f"{communication_label}: "
         f"{result['communication_mean_ms']:.3f} +/- {result['communication_std_ms']:.3f} ms "
         f"({result['communication_fraction_pct']:.2f}% of step)"
     )
