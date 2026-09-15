@@ -174,6 +174,26 @@ nsys profile --trace=cuda,nvtx,nccl --force-overwrite=true \
 Open the generated `.nsys-rep` files in Nsight Systems and capture the CUDA,
 NCCL, and NVTX rows around the measured training step.
 
+## Optimizer state sharding accounting
+
+Compare peak memory and training-step time for ordinary AdamW and the sharded
+optimizer on the required one-node, two-GPU XL configuration:
+
+```sh
+uv run python -m cs336_systems.optimizer_state_benchmark \
+  --backend nccl \
+  --world-size 2 \
+  --model-size xl \
+  --global-batch-size 4 \
+  --context-length 512 \
+  --warmup-steps 5 \
+  --measurement-steps 10
+```
+
+The two implementations run in fresh worker processes to keep allocator state
+isolated. Raw records, `comparison.json`, and a report generated from that JSON
+are written under `results/distributed/optimizer_state_sharding/`.
+
 ## Submitting
 
 To submit, run `./test_and_make_submission.sh` . This script will install your
