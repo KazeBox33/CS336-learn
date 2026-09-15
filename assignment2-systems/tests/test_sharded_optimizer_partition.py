@@ -64,3 +64,32 @@ def test_constructor_requires_process_group(monkeypatch) -> None:
     monkeypatch.setattr(torch.distributed, "is_initialized", lambda: False)
     with pytest.raises(RuntimeError, match="initialized process group"):
         ShardedOptimizer([torch.nn.Parameter(torch.zeros(1))], torch.optim.AdamW)
+
+
+def test_step_updates_local_parameters_and_broadcasts_all_parameters(monkeypatch) -> None:
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: 0)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+    broadcast_calls = []
+    monkeypatch.setattr(
+        torch.distributed,
+        "broadcast",
+        lambda parameter, src: broadcast_calls.append((parameter, src)),
+    )
+
+    parameters = [
+        torch.nn.Parameter(torch.tensor([1.0])),
+        torch.nn.Parameter(torch.tensor([2.0, 2.0])),
+    ]
+    optimizer = ShardedOptimizer(parameters, torch.optim.SGD, lr=0.1)
+    for parameter in parameters:
+        parameter.grad = torch.ones_like(parameter)
+
+    optimizer.step()
+
+    torch.testing.assert_close(parameters[0], torch.tensor([0.9]))
+    torch.testing.assert_close(parameters[1], torch.tensor([2.0, 2.0]))
+    assert [(id(parameter), src) for parameter, src in broadcast_calls] == [
+        (id(parameters[0]), 0),
+        (id(parameters[1]), 1),
+    ]
