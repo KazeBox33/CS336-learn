@@ -1,7 +1,13 @@
 import pytest
 import torch
+from cs336_basics.model import Embedding, Linear, RMSNorm
+from torch import nn
 
-from cs336_systems.fsdp import _restore_full_tensor, _shard_tensor
+from cs336_systems.fsdp import (
+    FullyShardedDataParallel,
+    _restore_full_tensor,
+    _shard_tensor,
+)
 
 
 def test_shard_tensor_splits_divisible_tensor_into_equal_flat_chunks() -> None:
@@ -53,3 +59,47 @@ def test_restore_full_tensor_rejects_wrong_gathered_size() -> None:
 
     with pytest.raises(ValueError, match="expected 6"):
         _restore_full_tensor(torch.ones(5), metadata)
+
+
+class _ShardableModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.embedding = Embedding(5, 1)
+        self.linear = Linear(1, 4)
+        self.norm = RMSNorm(4)
+
+
+def _mock_process_group(monkeypatch: pytest.MonkeyPatch, *, rank: int) -> None:
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    monkeypatch.setattr(torch.distributed, "get_rank", lambda: rank)
+    monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
+
+
+def test_fsdp_constructor_registers_local_master_shards(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_process_group(monkeypatch, rank=1)
+    model = _ShardableModel()
+    with torch.no_grad():
+        model.embedding.weight.copy_(torch.arange(5, dtype=torch.float32).view(5, 1))
+    embedding_parameter = model.embedding.weight
+    norm_shape = model.norm.weight.shape
+
+    fsdp = FullyShardedDataParallel(model, compute_dtype=torch.float16)
+
+    assert fsdp.compute_dtype == torch.float16
+    assert model.embedding.weight is embedding_parameter
+    assert model.embedding.weight.dtype == torch.float32
+    torch.testing.assert_close(model.embedding.weight, torch.tensor([3.0, 4.0, 0.0]))
+    assert model.linear.weight.shape == torch.Size([2])
+    assert model.norm.weight.shape == norm_shape
+    assert [state.name for state in fsdp._sharded_parameter_states] == [
+        "embedding.weight",
+        "linear.weight",
+    ]
+    assert all(state.parameter is state.module.weight for state in fsdp._sharded_parameter_states)
+
+
+def test_fsdp_constructor_requires_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: False)
+
+    with pytest.raises(RuntimeError, match="initialized process group"):
+        FullyShardedDataParallel(_ShardableModel())
