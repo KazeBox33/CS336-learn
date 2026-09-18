@@ -103,3 +103,51 @@ def test_fsdp_constructor_requires_process_group(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(RuntimeError, match="initialized process group"):
         FullyShardedDataParallel(_ShardableModel())
+
+
+@pytest.mark.parametrize(
+    ("compute_dtype", "expected_output_dtype"),
+    [(None, torch.float32), (torch.float16, torch.float16)],
+)
+def test_fsdp_forward_gathers_full_weight_then_restores_local_shard(
+    monkeypatch: pytest.MonkeyPatch,
+    compute_dtype: torch.dtype | None,
+    expected_output_dtype: torch.dtype,
+) -> None:
+    _mock_process_group(monkeypatch, rank=0)
+    embedding = Embedding(5, 1)
+    with torch.no_grad():
+        embedding.weight.copy_(torch.arange(5, dtype=torch.float32).view(5, 1))
+
+    gathered_input_dtypes = []
+
+    def fake_all_gather_into_tensor(
+        output_tensor: torch.Tensor,
+        input_tensor: torch.Tensor,
+    ) -> None:
+        gathered_input_dtypes.append(input_tensor.dtype)
+        padded_full_weight = torch.tensor(
+            [0.0, 1.0, 2.0, 3.0, 4.0, 0.0],
+            dtype=input_tensor.dtype,
+        )
+        output_tensor.copy_(padded_full_weight)
+
+    monkeypatch.setattr(
+        torch.distributed,
+        "all_gather_into_tensor",
+        fake_all_gather_into_tensor,
+    )
+    fsdp = FullyShardedDataParallel(embedding, compute_dtype=compute_dtype)
+    state = fsdp._sharded_parameter_states[0]
+
+    output = fsdp(torch.tensor([0, 4]))
+
+    torch.testing.assert_close(
+        output,
+        torch.tensor([[0.0], [4.0]], dtype=expected_output_dtype),
+    )
+    assert gathered_input_dtypes == [expected_output_dtype]
+    assert embedding.weight.dtype == torch.float32
+    assert embedding.weight.shape == torch.Size([3])
+    assert embedding.weight.data_ptr() == state.local_shard.data_ptr()
+    torch.testing.assert_close(embedding.weight, torch.tensor([0.0, 1.0, 2.0]))

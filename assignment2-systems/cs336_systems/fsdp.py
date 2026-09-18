@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Any
 
 import torch
 import torch.distributed as dist
@@ -26,7 +27,7 @@ class TensorShardMetadata: # 元数据
 
 
 @dataclass
-class ShardedParameterState:
+class ShardedParameterState: # 记录一个被分片参数的全部管理信息
     """Track one sharded module weight and its persistent local master shard."""
 
     name: str
@@ -95,30 +96,79 @@ class FullyShardedDataParallel(nn.Module):
         self.rank = dist.get_rank()
         self.world_size = dist.get_world_size()
         self._sharded_parameter_states: list[ShardedParameterState] = []
+        self._hook_handles: list[torch.utils.hooks.RemovableHandle] = []
         self._register_local_shards()
 
     def _register_local_shards(self) -> None:
         for module_name, child in self.module.named_modules():
-            if not isinstance(child, (Linear, Embedding)):
+            if not isinstance(child, (Linear, Embedding)): # 不是Linear 或者 Embedding 就过滤
                 continue
 
             parameter = child.weight
-            local_shard, metadata = _shard_tensor(
+            local_shard, metadata = _shard_tensor( # 分出 shard
                 parameter,
                 rank=self.rank,
                 world_size=self.world_size,
             )
-            parameter.data = local_shard
+            parameter.data = local_shard # 关键一步，替换掉了 .data
             parameter_name = f"{module_name}.weight" if module_name else "weight"
-            self._sharded_parameter_states.append(
-                ShardedParameterState(
-                    name=parameter_name,
-                    module=child,
-                    parameter=parameter,
-                    local_shard=local_shard,
-                    metadata=metadata,
+            state = ShardedParameterState(
+                name=parameter_name,
+                module=child,
+                parameter=parameter,
+                local_shard=local_shard,
+                metadata=metadata,
+            )
+            self._sharded_parameter_states.append(state)
+            self._hook_handles.append(
+                child.register_forward_pre_hook(self._make_forward_pre_hook(state))
+            )
+            self._hook_handles.append(
+                child.register_forward_hook(
+                    self._make_forward_post_hook(state),
+                    always_call=True,
                 )
             )
 
-    def forward(self, *inputs: object, **kwargs: object) -> object:
-        raise NotImplementedError("weight all-gather will be added in the next FSDP step")
+    def _materialize_full_parameter(self, state: ShardedParameterState) -> None:
+        communication_shard = state.local_shard
+        if self.compute_dtype is not None:
+            communication_shard = communication_shard.to(self.compute_dtype)
+
+        gathered_flat_parameter = torch.empty(
+            state.metadata.padded_numel,
+            dtype=communication_shard.dtype,
+            device=communication_shard.device,
+        )
+        dist.all_gather_into_tensor(
+            gathered_flat_parameter,
+            communication_shard.contiguous(),
+        )
+        state.parameter.data = _restore_full_tensor(
+            gathered_flat_parameter,
+            state.metadata,
+        )
+
+    @staticmethod
+    def _restore_local_parameter(state: ShardedParameterState) -> None:
+        state.parameter.data = state.local_shard
+
+    def _make_forward_pre_hook(self, state: ShardedParameterState):
+        def gather_full_parameter(_module: nn.Module, _inputs: tuple[Any, ...]) -> None:
+            self._materialize_full_parameter(state)
+
+        return gather_full_parameter
+
+    def _make_forward_post_hook(self, state: ShardedParameterState):
+        def free_full_parameter(
+            _module: nn.Module,
+            _inputs: tuple[Any, ...],
+            output: Any,
+        ) -> Any:
+            self._restore_local_parameter(state)
+            return output
+
+        return free_full_parameter
+
+    def forward(self, *inputs: Any, **kwargs: Any) -> Any:
+        return self.module(*inputs, **kwargs)
