@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -96,7 +97,7 @@ class FullyShardedDataParallel(nn.Module):
         self.rank = dist.get_rank()
         self.world_size = dist.get_world_size()
         self._sharded_parameter_states: list[ShardedParameterState] = []
-        self._hook_handles: list[torch.utils.hooks.RemovableHandle] = []
+        self._hook_handles: list[torch.utils.hooks.RemovableHandle] = [] 
         self._register_local_shards()
 
     def _register_local_shards(self) -> None:
@@ -121,19 +122,29 @@ class FullyShardedDataParallel(nn.Module):
             )
             self._sharded_parameter_states.append(state)
             self._hook_handles.append(
-                child.register_forward_pre_hook(self._make_forward_pre_hook(state))
+                child.register_forward_pre_hook(self._make_forward_pre_hook(state)) # 在该层计算钱还行
             )
             self._hook_handles.append(
-                child.register_forward_hook(
+                child.register_forward_hook( # 在该层计算后执行
                     self._make_forward_post_hook(state),
                     always_call=True,
                 )
             )
+            self._hook_handles.append(
+                child.register_full_backward_pre_hook(
+                    self._make_backward_pre_hook(state)
+                )
+            )
+            self._hook_handles.append(
+                parameter.register_post_accumulate_grad_hook( # 它会在该参数完整梯度写入parameter.grad后执行
+                    self._make_gradient_ready_hook(state)
+                )
+            )
 
     def _materialize_full_parameter(self, state: ShardedParameterState) -> None:
-        communication_shard = state.local_shard
+        communication_shard = state.local_shard # 先取出长期保存的FP32 shard
         if self.compute_dtype is not None:
-            communication_shard = communication_shard.to(self.compute_dtype)
+            communication_shard = communication_shard.to(self.compute_dtype) # 变成bf16
 
         gathered_flat_parameter = torch.empty(
             state.metadata.padded_numel,
@@ -153,13 +164,49 @@ class FullyShardedDataParallel(nn.Module):
     def _restore_local_parameter(state: ShardedParameterState) -> None:
         state.parameter.data = state.local_shard
 
-    def _make_forward_pre_hook(self, state: ShardedParameterState):
+    def _reduce_scatter_parameter_gradient(
+        self,
+        state: ShardedParameterState,
+    ) -> None:
+        full_gradient = state.parameter.grad
+        if full_gradient is None:
+            raise RuntimeError(f"gradient for {state.name} is not available")
+        if full_gradient.numel() != state.metadata.original_numel: # 说明此时的参数是完整的
+            raise RuntimeError(
+                f"gradient for {state.name} has {full_gradient.numel()} elements, "
+                f"expected {state.metadata.original_numel}"
+            )
+
+        padded_gradient = state.local_shard.new_zeros(state.metadata.padded_numel)
+        padded_gradient[: state.metadata.original_numel].copy_(
+            full_gradient.detach().reshape(-1)
+        )
+        padded_gradient.div_(self.world_size)
+
+        local_gradient = torch.empty_like(state.local_shard)
+        dist.reduce_scatter_tensor(
+            local_gradient,
+            padded_gradient,
+            op=dist.ReduceOp.SUM,
+        )
+
+        state.parameter.grad = None
+        self._restore_local_parameter(state)
+        state.parameter.grad = local_gradient
+
+    def _make_forward_pre_hook(
+        self,
+        state: ShardedParameterState,
+    ) -> Callable[[nn.Module, tuple[Any, ...]], None]:
         def gather_full_parameter(_module: nn.Module, _inputs: tuple[Any, ...]) -> None:
             self._materialize_full_parameter(state)
 
         return gather_full_parameter
 
-    def _make_forward_post_hook(self, state: ShardedParameterState):
+    def _make_forward_post_hook(
+        self,
+        state: ShardedParameterState,
+    ) -> Callable[[nn.Module, tuple[Any, ...], Any], Any]:
         def free_full_parameter(
             _module: nn.Module,
             _inputs: tuple[Any, ...],
@@ -169,6 +216,27 @@ class FullyShardedDataParallel(nn.Module):
             return output
 
         return free_full_parameter
+
+    def _make_backward_pre_hook(
+        self,
+        state: ShardedParameterState,
+    ) -> Callable[[nn.Module, tuple[torch.Tensor, ...]], None]:
+        def gather_full_parameter(
+            _module: nn.Module,
+            _grad_outputs: tuple[torch.Tensor, ...],
+        ) -> None:
+            self._materialize_full_parameter(state)
+
+        return gather_full_parameter
+
+    def _make_gradient_ready_hook(
+        self,
+        state: ShardedParameterState,
+    ) -> Callable[[torch.Tensor], None]:
+        def reduce_scatter_gradient(_parameter: torch.Tensor) -> None:
+            self._reduce_scatter_parameter_gradient(state)
+
+        return reduce_scatter_gradient
 
     def forward(self, *inputs: Any, **kwargs: Any) -> Any:
         return self.module(*inputs, **kwargs)

@@ -151,3 +151,59 @@ def test_fsdp_forward_gathers_full_weight_then_restores_local_shard(
     assert embedding.weight.shape == torch.Size([3])
     assert embedding.weight.data_ptr() == state.local_shard.data_ptr()
     torch.testing.assert_close(embedding.weight, torch.tensor([0.0, 1.0, 2.0]))
+
+
+def test_fsdp_backward_gathers_weight_and_reduce_scatters_gradient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_process_group(monkeypatch, rank=0)
+    linear = Linear(2, 2)
+    with torch.no_grad():
+        linear.weight.copy_(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+
+    all_gather_calls = []
+    reduce_scatter_inputs = []
+
+    def fake_all_gather_into_tensor(
+        output_tensor: torch.Tensor,
+        input_tensor: torch.Tensor,
+    ) -> None:
+        all_gather_calls.append(input_tensor.clone())
+        output_tensor.copy_(torch.tensor([1.0, 2.0, 3.0, 4.0]))
+
+    def fake_reduce_scatter_tensor(
+        output_tensor: torch.Tensor,
+        input_tensor: torch.Tensor,
+        *,
+        op: torch.distributed.ReduceOp,
+    ) -> None:
+        assert op == torch.distributed.ReduceOp.SUM
+        reduce_scatter_inputs.append(input_tensor.clone())
+        output_tensor.copy_(input_tensor[: output_tensor.numel()] * 2)
+
+    monkeypatch.setattr(
+        torch.distributed,
+        "all_gather_into_tensor",
+        fake_all_gather_into_tensor,
+    )
+    monkeypatch.setattr(
+        torch.distributed,
+        "reduce_scatter_tensor",
+        fake_reduce_scatter_tensor,
+    )
+    fsdp = FullyShardedDataParallel(linear)
+    state = fsdp._sharded_parameter_states[0]
+    inputs = torch.tensor([[1.0, 1.0]], requires_grad=True)
+
+    output = fsdp(inputs)
+    output.sum().backward()
+
+    assert len(all_gather_calls) == 2
+    torch.testing.assert_close(inputs.grad, torch.tensor([[4.0, 6.0]]))
+    torch.testing.assert_close(
+        reduce_scatter_inputs[0],
+        torch.full((4,), 0.5),
+    )
+    assert linear.weight.data_ptr() == state.local_shard.data_ptr()
+    torch.testing.assert_close(linear.weight, torch.tensor([1.0, 2.0]))
+    torch.testing.assert_close(linear.weight.grad, torch.tensor([1.0, 1.0]))
