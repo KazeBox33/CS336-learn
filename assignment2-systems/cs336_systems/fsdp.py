@@ -98,7 +98,9 @@ class FullyShardedDataParallel(nn.Module):
         self.world_size = dist.get_world_size()
         self._sharded_parameter_states: list[ShardedParameterState] = []
         self._hook_handles: list[torch.utils.hooks.RemovableHandle] = [] 
+        self._pending_works: list[dist.Work] = [] 
         self._register_local_shards()
+        self._register_replicated_gradient_hooks()
 
     def _register_local_shards(self) -> None:
         for module_name, child in self.module.named_modules():
@@ -140,6 +142,18 @@ class FullyShardedDataParallel(nn.Module):
                     self._make_gradient_ready_hook(state)
                 )
             )
+
+    def _register_replicated_gradient_hooks(self) -> None:
+        sharded_parameter_ids = {
+            id(state.parameter) for state in self._sharded_parameter_states # 先收集已经分片的参数的id
+        }
+        for parameter in self.module.parameters():
+            if parameter.requires_grad and id(parameter) not in sharded_parameter_ids: # 收集没有分片的参数
+                self._hook_handles.append(
+                    parameter.register_post_accumulate_grad_hook(
+                        self._make_replicated_gradient_hook()
+                    )
+                )
 
     def _materialize_full_parameter(self, state: ShardedParameterState) -> None:
         communication_shard = state.local_shard # 先取出长期保存的FP32 shard
@@ -237,6 +251,29 @@ class FullyShardedDataParallel(nn.Module):
             self._reduce_scatter_parameter_gradient(state)
 
         return reduce_scatter_gradient
+
+    def _make_replicated_gradient_hook(
+        self,
+    ) -> Callable[[torch.Tensor], None]:
+        def synchronize_gradient(parameter: torch.Tensor) -> None:
+            if parameter.grad is None:
+                raise RuntimeError("replicated parameter gradient is not available")
+
+            with torch.no_grad():
+                parameter.grad.div_(self.world_size) # 核心部分，梯度除以world_size
+                work = dist.all_reduce( # 再进行all reduce
+                    parameter.grad,
+                    op=dist.ReduceOp.SUM,
+                    async_op=True, # 这里异步可以为 computation/communication overlap 提供可能
+                )
+            self._pending_works.append(work)
+
+        return synchronize_gradient
+
+    def finish_gradient_synchronization(self) -> None: # 需要在 optimizer 前梯度更新完
+        for work in self._pending_works:
+            work.wait()
+        self._pending_works.clear()
 
     def forward(self, *inputs: Any, **kwargs: Any) -> Any:
         return self.module(*inputs, **kwargs)

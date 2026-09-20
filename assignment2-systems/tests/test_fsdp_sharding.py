@@ -207,3 +207,47 @@ def test_fsdp_backward_gathers_weight_and_reduce_scatters_gradient(
     assert linear.weight.data_ptr() == state.local_shard.data_ptr()
     torch.testing.assert_close(linear.weight, torch.tensor([1.0, 2.0]))
     torch.testing.assert_close(linear.weight.grad, torch.tensor([1.0, 1.0]))
+
+
+def test_fsdp_synchronizes_replicated_gradients_asynchronously(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_process_group(monkeypatch, rank=0)
+    model = _ShardableModel()
+    fsdp = FullyShardedDataParallel(model)
+    replicated_parameter = model.norm.weight
+    replicated_parameter.grad = torch.tensor([2.0, 4.0, 6.0, 8.0])
+    all_reduce_inputs = []
+    waited = []
+
+    class FakeWork:
+        def wait(self) -> None:
+            waited.append(True)
+
+    def fake_all_reduce(
+        tensor: torch.Tensor,
+        *,
+        op: torch.distributed.ReduceOp,
+        async_op: bool,
+    ) -> FakeWork:
+        assert op == torch.distributed.ReduceOp.SUM
+        assert async_op
+        all_reduce_inputs.append(tensor.clone())
+        tensor.mul_(2)
+        return FakeWork()
+
+    monkeypatch.setattr(torch.distributed, "all_reduce", fake_all_reduce)
+    fsdp._make_replicated_gradient_hook()(replicated_parameter)
+
+    torch.testing.assert_close(
+        all_reduce_inputs[0],
+        torch.tensor([1.0, 2.0, 3.0, 4.0]),
+    )
+    fsdp.finish_gradient_synchronization()
+
+    assert waited == [True]
+    assert fsdp._pending_works == []
+    torch.testing.assert_close(
+        replicated_parameter.grad,
+        torch.tensor([2.0, 4.0, 6.0, 8.0]),
+    )
