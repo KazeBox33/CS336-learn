@@ -28,6 +28,15 @@ class TensorShardMetadata: # 元数据
 
 
 @dataclass
+class PendingAllGather: # 保存正在进行的通信
+    """Keep communication buffers alive until the gathered weight is consumed."""
+
+    work: dist.Work
+    input_shard: torch.Tensor
+    output_buffer: torch.Tensor
+
+
+@dataclass
 class ShardedParameterState: # 记录一个被分片参数的全部管理信息
     """Track one sharded module weight and its persistent local master shard."""
 
@@ -36,6 +45,7 @@ class ShardedParameterState: # 记录一个被分片参数的全部管理信息
     parameter: nn.Parameter
     local_shard: torch.Tensor
     metadata: TensorShardMetadata
+    pending_all_gather: PendingAllGather | None = None
 
 
 def _shard_tensor(
@@ -155,24 +165,42 @@ class FullyShardedDataParallel(nn.Module):
                     )
                 )
 
-    def _materialize_full_parameter(self, state: ShardedParameterState) -> None:
+    def _start_parameter_all_gather(self, state: ShardedParameterState) -> None: # 进行 all gather 创建接收空间
+        if state.pending_all_gather is not None:
+            return
+
         communication_shard = state.local_shard # 先取出长期保存的FP32 shard
         if self.compute_dtype is not None:
             communication_shard = communication_shard.to(self.compute_dtype) # 变成bf16
+        communication_shard = communication_shard.contiguous()
 
-        gathered_flat_parameter = torch.empty(
+        gathered_flat_parameter = torch.empty( # 创建接收空间
             state.metadata.padded_numel,
             dtype=communication_shard.dtype,
             device=communication_shard.device,
         )
-        dist.all_gather_into_tensor(
+        work = dist.all_gather_into_tensor(
             gathered_flat_parameter,
-            communication_shard.contiguous(),
+            communication_shard,
+            async_op=True,
         )
+        state.pending_all_gather = PendingAllGather(
+            work=work,
+            input_shard=communication_shard,
+            output_buffer=gathered_flat_parameter,
+        )
+
+    def _materialize_full_parameter(self, state: ShardedParameterState) -> None:
+        self._start_parameter_all_gather(state)
+        pending = state.pending_all_gather
+        assert pending is not None
+        # Establish the communication dependency before accessing its output.
+        pending.work.wait() # 等待 异步请求处理
         state.parameter.data = _restore_full_tensor(
-            gathered_flat_parameter,
+            pending.output_buffer,
             state.metadata,
         )
+        state.pending_all_gather = None
 
     @staticmethod
     def _restore_local_parameter(state: ShardedParameterState) -> None:

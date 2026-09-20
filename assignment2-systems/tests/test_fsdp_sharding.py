@@ -75,6 +75,20 @@ def _mock_process_group(monkeypatch: pytest.MonkeyPatch, *, rank: int) -> None:
     monkeypatch.setattr(torch.distributed, "get_world_size", lambda: 2)
 
 
+class _DeferredAllGather:
+    """Expose valid output only after wait, like an unfinished collective."""
+
+    def __init__(self, output: torch.Tensor, values: torch.Tensor) -> None:
+        self.output = output
+        self.values = values
+        self.wait_count = 0
+        output.fill_(float("nan"))
+
+    def wait(self) -> None:
+        self.wait_count += 1
+        self.output.copy_(self.values)
+
+
 def test_fsdp_constructor_registers_local_master_shards(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_process_group(monkeypatch, rank=1)
     model = _ShardableModel()
@@ -161,13 +175,16 @@ def test_fsdp_forward_gathers_full_weight_then_restores_local_shard(
     def fake_all_gather_into_tensor(
         output_tensor: torch.Tensor,
         input_tensor: torch.Tensor,
-    ) -> None:
+        *,
+        async_op: bool,
+    ) -> _DeferredAllGather:
+        assert async_op
         gathered_input_dtypes.append(input_tensor.dtype)
         padded_full_weight = torch.tensor(
             [0.0, 1.0, 2.0, 3.0, 4.0, 0.0],
             dtype=input_tensor.dtype,
         )
-        output_tensor.copy_(padded_full_weight)
+        return _DeferredAllGather(output_tensor, padded_full_weight)
 
     monkeypatch.setattr(
         torch.distributed,
@@ -177,6 +194,16 @@ def test_fsdp_forward_gathers_full_weight_then_restores_local_shard(
     fsdp = FullyShardedDataParallel(embedding, compute_dtype=compute_dtype)
     state = fsdp._sharded_parameter_states[0]
 
+    fsdp._start_parameter_all_gather(state)
+    pending = state.pending_all_gather
+    assert pending is not None
+    fsdp._start_parameter_all_gather(state)
+    assert state.pending_all_gather is pending
+    assert pending.work.wait_count == 0
+    assert pending.input_shard.dtype == expected_output_dtype
+    assert torch.isnan(pending.output_buffer).all()
+    torch.testing.assert_close(embedding.weight, torch.tensor([0.0, 1.0, 2.0]))
+
     output = fsdp(torch.tensor([0, 4]))
 
     torch.testing.assert_close(
@@ -184,6 +211,8 @@ def test_fsdp_forward_gathers_full_weight_then_restores_local_shard(
         torch.tensor([[0.0], [4.0]], dtype=expected_output_dtype),
     )
     assert gathered_input_dtypes == [expected_output_dtype]
+    assert pending.work.wait_count == 1
+    assert state.pending_all_gather is None
     assert embedding.weight.dtype == torch.float32
     assert embedding.weight.shape == torch.Size([3])
     assert embedding.weight.data_ptr() == state.local_shard.data_ptr()
@@ -204,9 +233,14 @@ def test_fsdp_backward_gathers_weight_and_reduce_scatters_gradient(
     def fake_all_gather_into_tensor(
         output_tensor: torch.Tensor,
         input_tensor: torch.Tensor,
-    ) -> None:
+        *,
+        async_op: bool,
+    ) -> _DeferredAllGather:
+        assert async_op
         all_gather_calls.append(input_tensor.clone())
-        output_tensor.copy_(torch.tensor([1.0, 2.0, 3.0, 4.0]))
+        return _DeferredAllGather(
+            output_tensor, torch.tensor([1.0, 2.0, 3.0, 4.0])
+        )
 
     def fake_reduce_scatter_tensor(
         output_tensor: torch.Tensor,
