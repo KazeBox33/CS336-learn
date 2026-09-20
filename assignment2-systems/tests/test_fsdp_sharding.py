@@ -328,10 +328,22 @@ def test_fsdp_backward_gathers_weight_and_reduce_scatters_gradient(
         input_tensor: torch.Tensor,
         *,
         op: torch.distributed.ReduceOp,
-    ) -> None:
+        async_op: bool,
+    ) -> object:
         assert op == torch.distributed.ReduceOp.SUM
+        assert async_op
         reduce_scatter_inputs.append(input_tensor.clone())
-        output_tensor.copy_(input_tensor[: output_tensor.numel()] * 2)
+        output_tensor.fill_(float("nan"))
+
+        class Work:
+            def __init__(self) -> None:
+                self.wait_count = 0
+
+            def wait(self) -> None:
+                self.wait_count += 1
+                output_tensor.copy_(input_tensor[: output_tensor.numel()] * 2)
+
+        return Work()
 
     monkeypatch.setattr(
         torch.distributed,
@@ -358,6 +370,17 @@ def test_fsdp_backward_gathers_weight_and_reduce_scatters_gradient(
     )
     assert linear.weight.data_ptr() == state.local_shard.data_ptr()
     torch.testing.assert_close(linear.weight, torch.tensor([1.0, 2.0]))
+    assert torch.isnan(linear.weight.grad).all()
+    assert len(fsdp._pending_works) == 1
+    pending_work = fsdp._pending_works[0]
+    assert pending_work.wait_count == 0
+    assert len(fsdp._pending_reduce_scatter_inputs) == 1
+
+    fsdp.finish_gradient_synchronization()
+
+    assert pending_work.wait_count == 1
+    assert fsdp._pending_works == []
+    assert fsdp._pending_reduce_scatter_inputs == []
     torch.testing.assert_close(linear.weight.grad, torch.tensor([1.0, 1.0]))
 
 

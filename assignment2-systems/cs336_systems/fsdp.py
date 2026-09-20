@@ -108,7 +108,8 @@ class FullyShardedDataParallel(nn.Module):
         self.world_size = dist.get_world_size()
         self._sharded_parameter_states: list[ShardedParameterState] = []
         self._hook_handles: list[torch.utils.hooks.RemovableHandle] = [] 
-        self._pending_works: list[dist.Work] = [] 
+        self._pending_works: list[dist.Work] = [] # 通信句柄
+        self._pending_reduce_scatter_inputs: list[torch.Tensor] = [] # 保存临时输入的buffer
         self._register_local_shards()
         self._register_replicated_gradient_hooks()
         self._forward_order: list[ShardedParameterState] = [] # 按需收集，记录顺序
@@ -229,15 +230,18 @@ class FullyShardedDataParallel(nn.Module):
         padded_gradient.div_(self.world_size)
 
         local_gradient = torch.empty_like(state.local_shard)
-        dist.reduce_scatter_tensor(
+        work = dist.reduce_scatter_tensor(
             local_gradient,
             padded_gradient,
             op=dist.ReduceOp.SUM,
+            async_op=True,
         )
 
         state.parameter.grad = None
         self._restore_local_parameter(state)
         state.parameter.grad = local_gradient
+        self._pending_works.append(work)
+        self._pending_reduce_scatter_inputs.append(padded_gradient)
 
     def _make_forward_pre_hook(
         self,
@@ -317,6 +321,7 @@ class FullyShardedDataParallel(nn.Module):
         for work in self._pending_works:
             work.wait()
         self._pending_works.clear()
+        self._pending_reduce_scatter_inputs.clear()
 
     @torch.no_grad()
     def gather_full_params(self) -> dict[str, torch.Tensor]:  # 为了保留完整快照 ， 测试 optimizer.step 后的参数
