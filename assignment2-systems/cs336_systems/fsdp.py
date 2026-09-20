@@ -275,5 +275,24 @@ class FullyShardedDataParallel(nn.Module):
             work.wait()
         self._pending_works.clear()
 
+    @torch.no_grad()
+    def gather_full_params(self) -> dict[str, torch.Tensor]:  # 为了保留完整快照 ， 测试 optimizer.step 后的参数
+        """Collect independent master-weight snapshots; every rank must call this."""
+        self.finish_gradient_synchronization()
+        states_by_id = {
+            id(state.parameter): state for state in self._sharded_parameter_states
+        }
+        full_params = {}
+        for name, parameter in self.module.named_parameters():
+            state = states_by_id.get(id(parameter))
+            if state is None:
+                full_params[name] = parameter.detach().clone()
+                continue
+
+            gathered = state.local_shard.new_empty(state.metadata.padded_numel)
+            dist.all_gather_into_tensor(gathered, state.local_shard.contiguous())
+            full_params[name] = _restore_full_tensor(gathered, state.metadata).clone()
+        return full_params
+
     def forward(self, *inputs: Any, **kwargs: Any) -> Any:
         return self.module(*inputs, **kwargs)

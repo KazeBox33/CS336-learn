@@ -105,6 +105,43 @@ def test_fsdp_constructor_requires_process_group(monkeypatch: pytest.MonkeyPatch
         FullyShardedDataParallel(_ShardableModel())
 
 
+def test_fsdp_full_parameter_snapshot_preserves_master_shards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _mock_process_group(monkeypatch, rank=1)
+    model = _ShardableModel()
+    expected = {
+        name: parameter.detach().clone()
+        for name, parameter in model.named_parameters()
+    }
+    full_weights = iter([expected["embedding.weight"], expected["linear.weight"]])
+
+    def fake_all_gather(output: torch.Tensor, shard: torch.Tensor) -> None:
+        assert shard.dtype == torch.float32
+        weight = next(full_weights).flatten()
+        output.zero_()
+        output[: weight.numel()].copy_(weight)
+
+    monkeypatch.setattr(torch.distributed, "all_gather_into_tensor", fake_all_gather)
+    fsdp = FullyShardedDataParallel(model, compute_dtype=torch.float16)
+    local_before = {
+        name: parameter.detach().clone()
+        for name, parameter in model.named_parameters()
+    }
+
+    snapshot = fsdp.gather_full_params()
+
+    assert snapshot.keys() == expected.keys()
+    for name, tensor in snapshot.items():
+        torch.testing.assert_close(tensor, expected[name])
+        assert not tensor.requires_grad
+        tensor.zero_()
+    for name, parameter in model.named_parameters():
+        torch.testing.assert_close(parameter, local_before[name])
+    for state in fsdp._sharded_parameter_states:
+        assert state.parameter.data_ptr() == state.local_shard.data_ptr()
+
+
 @pytest.mark.parametrize(
     ("compute_dtype", "expected_output_dtype"),
     [(None, torch.float32), (torch.float16, torch.float16)],
