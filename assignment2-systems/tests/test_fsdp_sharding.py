@@ -89,6 +89,87 @@ class _DeferredAllGather:
         self.output.copy_(self.values)
 
 
+@pytest.mark.parametrize("second_path", [(0, 1, 2), (0, 2), (0,)])
+def test_forward_prefetch_uses_execution_order_and_cleans_unused_requests(
+    monkeypatch: pytest.MonkeyPatch, second_path: tuple[int, ...],
+) -> None:
+    _mock_process_group(monkeypatch, rank=0)
+    events = []
+
+    class RecordingLinear(Linear):
+        def __init__(self, index: int) -> None:
+            super().__init__(2, 2)
+            self.index = index
+            with torch.no_grad():
+                self.weight.fill_(index + 1)
+
+        def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+            events.append(("compute", self.index))
+            return super().forward(inputs)
+
+    class Model(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            # Registration order intentionally differs from execution order.
+            self.layers = nn.ModuleList([RecordingLinear(2), RecordingLinear(0), RecordingLinear(1)])
+            self.path = (0, 1, 2)
+            self.fail = False
+
+        def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+            for index in self.path:
+                inputs = self.layers[(index + 1) % 3](inputs)
+                if self.fail:
+                    raise RuntimeError("intentional forward failure")
+            return inputs
+
+    def all_gather(output: torch.Tensor, shard: torch.Tensor, *, async_op: bool):
+        assert async_op
+        index = int(shard[0].item()) - 1
+        events.append(("start", index))
+
+        class Work:
+            def wait(self) -> None:
+                events.append(("wait", index))
+                output.fill_(index + 1)
+
+        output.fill_(float("nan"))
+        return Work()
+
+    monkeypatch.setattr(torch.distributed, "all_gather_into_tensor", all_gather)
+    model = Model()
+    fsdp = FullyShardedDataParallel(model)
+    inputs = torch.ones(1, 2)
+    with torch.no_grad():
+        fsdp(inputs)
+        assert events == [
+            (operation, index)
+            for index in (0, 1, 2)
+            for operation in ("start", "wait", "compute")
+        ]
+        events.clear()
+        model.path = second_path
+        output = fsdp(inputs)
+
+    assert events.index(("start", 1)) < events.index(("compute", 0))
+    expected = inputs.clone()
+    for index in second_path:
+        expected = expected @ torch.full((2, 2), float(index + 1))
+    torch.testing.assert_close(output, expected)
+    assert sum(event == ("start", 1) for event in events) == 1
+    for state in fsdp._sharded_parameter_states:
+        assert state.pending_all_gather is None
+        assert state.parameter.data_ptr() == state.local_shard.data_ptr()
+
+    # Relearn the full path, then fail after the first layer has prefetched the next.
+    model.path = (0, 1, 2)
+    with torch.no_grad():
+        fsdp(inputs)
+        model.fail = True
+        with pytest.raises(RuntimeError, match="intentional forward failure"):
+            fsdp(inputs)
+    assert all(state.pending_all_gather is None for state in fsdp._sharded_parameter_states)
+
+
 def test_fsdp_constructor_registers_local_master_shards(monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_process_group(monkeypatch, rank=1)
     model = _ShardableModel()

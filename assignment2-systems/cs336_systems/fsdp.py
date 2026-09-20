@@ -111,6 +111,9 @@ class FullyShardedDataParallel(nn.Module):
         self._pending_works: list[dist.Work] = [] 
         self._register_local_shards()
         self._register_replicated_gradient_hooks()
+        self._forward_order: list[ShardedParameterState] = [] # 按需收集，记录顺序
+        self._current_forward_order: list[ShardedParameterState] | None = None
+        self._forward_order_matches = False
 
     def _register_local_shards(self) -> None:
         for module_name, child in self.module.named_modules():
@@ -134,7 +137,7 @@ class FullyShardedDataParallel(nn.Module):
             )
             self._sharded_parameter_states.append(state)
             self._hook_handles.append(
-                child.register_forward_pre_hook(self._make_forward_pre_hook(state)) # 在该层计算钱还行
+                child.register_forward_pre_hook(self._make_forward_pre_hook(state)) # 在该层计算前执行
             )
             self._hook_handles.append(
                 child.register_forward_hook( # 在该层计算后执行
@@ -166,7 +169,7 @@ class FullyShardedDataParallel(nn.Module):
                 )
 
     def _start_parameter_all_gather(self, state: ShardedParameterState) -> None: # 进行 all gather 创建接收空间
-        if state.pending_all_gather is not None:
+        if state.pending_all_gather is not None:  #  如果有pending的，就不用 all gather 了，return 后直接 wait
             return
 
         communication_shard = state.local_shard # 先取出长期保存的FP32 shard
@@ -241,7 +244,19 @@ class FullyShardedDataParallel(nn.Module):
         state: ShardedParameterState,
     ) -> Callable[[nn.Module, tuple[Any, ...]], None]:
         def gather_full_parameter(_module: nn.Module, _inputs: tuple[Any, ...]) -> None:
+            trace = self._current_forward_order
+            index = len(trace) if trace is not None else 0
+            if self._forward_order_matches and (
+                index >= len(self._forward_order)
+                or self._forward_order[index] is not state # 检查当前执行层是否符合上一层的记录 ， 不符合就采取下面的措施进行清理
+            ):
+                self._discard_unused_all_gathers()
+                self._forward_order_matches = False
             self._materialize_full_parameter(state)
+            if trace is not None:
+                trace.append(state) # current 记录完整L1
+                if self._forward_order_matches and index + 1 < len(self._forward_order):
+                    self._start_parameter_all_gather(self._forward_order[index + 1]) # 这一步只发起 all gather 没有 wait
 
         return gather_full_parameter
 
@@ -322,5 +337,23 @@ class FullyShardedDataParallel(nn.Module):
             full_params[name] = _restore_full_tensor(gathered, state.metadata).clone()
         return full_params
 
+    def _discard_unused_all_gathers(self) -> None:  # 清理预存的
+        for state in self._sharded_parameter_states:
+            pending = state.pending_all_gather
+            if pending is not None:
+                pending.work.wait()
+                state.pending_all_gather = None
+
     def forward(self, *inputs: Any, **kwargs: Any) -> Any:
-        return self.module(*inputs, **kwargs)
+        """Learn execution order, then prefetch one sharded layer ahead."""
+        self._current_forward_order = []
+        self._forward_order_matches = bool(self._forward_order) # 第二层开始这里是 True
+        try:
+            output = self.module(*inputs, **kwargs)
+            self._forward_order = self._current_forward_order # 保存顺序然后替换
+            return output
+        finally:
+            # A shortened path or exception may leave an unused prefetch in flight.
+            self._discard_unused_all_gathers()
+            self._current_forward_order = None
+            self._forward_order_matches = False
