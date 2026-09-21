@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +12,15 @@ import torch
 import torch.distributed as dist
 from cs336_basics.model import Embedding, Linear
 from torch import nn
+
+
+def _nvtx_range(
+    message: str,
+    tensor: torch.Tensor,
+) -> AbstractContextManager[None]:
+    if tensor.device.type == "cuda":
+        return torch.cuda.nvtx.range(message)
+    return nullcontext()
 
 
 @dataclass(frozen=True)
@@ -169,7 +179,12 @@ class FullyShardedDataParallel(nn.Module):
                     )
                 )
 
-    def _start_parameter_all_gather(self, state: ShardedParameterState) -> None: # 进行 all gather 创建接收空间
+    def _start_parameter_all_gather(
+        self,
+        state: ShardedParameterState,
+        *,
+        reason: str = "manual",
+    ) -> None: # 进行 all gather 创建接收空间
         if state.pending_all_gather is not None:  #  如果有pending的，就不用 all gather 了，return 后直接 wait
             return
 
@@ -183,23 +198,36 @@ class FullyShardedDataParallel(nn.Module):
             dtype=communication_shard.dtype,
             device=communication_shard.device,
         )
-        work = dist.all_gather_into_tensor(
-            gathered_flat_parameter,
+        with _nvtx_range(
+            f"fsdp_all_gather_launch:{reason}:{state.name}",
             communication_shard,
-            async_op=True,
-        )
+        ):
+            work = dist.all_gather_into_tensor(
+                gathered_flat_parameter,
+                communication_shard,
+                async_op=True,
+            )
         state.pending_all_gather = PendingAllGather(
             work=work,
             input_shard=communication_shard,
             output_buffer=gathered_flat_parameter,
         )
 
-    def _materialize_full_parameter(self, state: ShardedParameterState) -> None:
-        self._start_parameter_all_gather(state)
+    def _materialize_full_parameter(
+        self,
+        state: ShardedParameterState,
+        *,
+        phase: str,
+    ) -> None:
+        self._start_parameter_all_gather(state, reason=f"{phase}_demand")
         pending = state.pending_all_gather
         assert pending is not None
         # Establish the communication dependency before accessing its output.
-        pending.work.wait() # 等待 异步请求处理
+        with _nvtx_range(
+            f"fsdp_all_gather_wait:{phase}:{state.name}",
+            state.local_shard,
+        ):
+            pending.work.wait() # 等待 异步请求处理
         state.parameter.data = _restore_full_tensor(
             pending.output_buffer,
             state.metadata,
@@ -256,11 +284,16 @@ class FullyShardedDataParallel(nn.Module):
             ):
                 self._discard_unused_all_gathers()
                 self._forward_order_matches = False
-            self._materialize_full_parameter(state)
+            self._materialize_full_parameter(state, phase="forward")
             if trace is not None:
                 trace.append(state) # current 记录完整L1
                 if self._forward_order_matches and index + 1 < len(self._forward_order):
-                    self._start_parameter_all_gather(self._forward_order[index + 1]) # 这一步只发起 all gather 没有 wait
+                    self._start_parameter_all_gather(
+                        self._forward_order[index + 1],
+                        reason="forward_prefetch",
+                    )  # 这一步只发起 all gather 没有 wait
+            if state.local_shard.device.type == "cuda":
+                torch.cuda.nvtx.range_push(f"fsdp_forward_compute:{state.name}")
 
         return gather_full_parameter
 
@@ -273,6 +306,8 @@ class FullyShardedDataParallel(nn.Module):
             _inputs: tuple[Any, ...],
             output: Any,
         ) -> Any:
+            if state.local_shard.device.type == "cuda":
+                torch.cuda.nvtx.range_pop()
             self._restore_local_parameter(state)
             return output
 
@@ -286,7 +321,7 @@ class FullyShardedDataParallel(nn.Module):
             _module: nn.Module,
             _grad_outputs: tuple[torch.Tensor, ...],
         ) -> None:
-            self._materialize_full_parameter(state)
+            self._materialize_full_parameter(state, phase="backward")
 
         return gather_full_parameter
 

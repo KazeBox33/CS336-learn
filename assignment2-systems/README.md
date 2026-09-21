@@ -194,6 +194,31 @@ The two implementations run in fresh worker processes to keep allocator state
 isolated. Raw records, `comparison.json`, and a report generated from that JSON
 are written under `results/distributed/optimizer_state_sharding/`.
 
+## FSDP accounting and all-gather profiling
+
+Record the theoretical persistent model-state memory and profile the XL model
+on one node with two NVIDIA GPUs. At least one warmup step is required so FSDP
+can learn the forward execution order used for one-layer-ahead prefetching.
+
+```sh
+nsys profile --trace=cuda,nvtx,nccl --force-overwrite=true \
+  --output=results/distributed/fsdp_accounting/fsdp_trace \
+  uv run python -m cs336_systems.fsdp_accounting \
+    --backend nccl --world-size 2 --model-size xl \
+    --global-batch-size 4 --context-length 512 \
+    --compute-dtype bf16 --warmup-steps 5 --measurement-steps 1 \
+    --output-path results/distributed/fsdp_accounting/profile.json
+```
+
+Open `fsdp_trace.nsys-rep` in Nsight Systems and inspect the measured
+`fsdp_measurement` range. Compare each
+`fsdp_all_gather_launch:forward_prefetch:<parameter>` and NCCL all-gather with
+the preceding `fsdp_forward_compute:<parameter>` range. If the next layer's
+compute starts immediately after the preceding computation, the all-gather was
+hidden; a gap before that compute indicates exposed communication wait. Use the
+durations from the CUDA and NCCL rows in the assignment response and attach a
+screenshot of those rows.
+
 ## Submitting
 
 To submit, run `./test_and_make_submission.sh` . This script will install your
