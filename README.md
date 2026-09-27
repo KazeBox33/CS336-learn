@@ -2,7 +2,7 @@
 
 从零实现语言模型，并继续深入单 GPU 性能分析、Triton GPU Kernel 与分布式训练。
 
-This repository records my implementation-driven study of Stanford CS336: Language Modeling from Scratch. Assignment 1 covers the complete language-modeling pipeline; Assignment 2 extends it into profiling, memory optimization, FlashAttention-2, DDP, optimizer sharding, and FSDP.
+This repository records my implementation-driven study of Stanford CS336: Language Modeling from Scratch. Assignment 1 covers the complete language-modeling pipeline; Assignment 2 extends it into profiling, memory optimization, FlashAttention-2, DDP, optimizer sharding, and FSDP. The Assignment 3 scaling-law starter is also available for the next stage.
 
 ![CS336 learning roadmap](docs/readme/learning-roadmap.svg)
 
@@ -14,9 +14,11 @@ This repository records my implementation-driven study of Stanford CS336: Langua
 | TinyStories end-to-end pipeline | Complete | Validation loss `1.8751`; coherent story-style generation |
 | OpenWebText tokenizer and preprocessing | Complete | 32K BPE on 12 GB text; 2.7B train tokens serialized |
 | OpenWebText LM experiments | Complete baseline | Best recorded validation loss `3.6905` on RTX 5090 |
-| Assignment 2 systems | In progress | Building the synchronized end-to-end benchmarking harness |
+| Assignment 2 core code | Complete | Benchmarking, FlashAttention-2, DDP, optimizer sharding, and FSDP implementations |
+| Assignment 2 experiments | Pending | GPU/NCCL measurements, Nsight traces, and experimental write-ups to be added later |
+| Assignment 3 scaling laws | Starter imported | Official handout, reference code, examples, and tests are available |
 
-The active task is CS336 Spring 2026 Assignment 2, Section 2.1.3: implementing configurable forward, backward, and optimizer-step benchmarks with warm-up and correct CUDA synchronization.
+Assignment 2's core implementation work is complete for now. The remaining work is to organize the parallelism calculations and run the GPU experiments when the required hardware is available; the optional leaderboard optimization is a separate future project.
 
 ## Assignment 1 / Language Modeling Basics
 
@@ -77,12 +79,16 @@ The Spring 2026 starter is under [`assignment2-systems/`](assignment2-systems/).
 6. Optimizer state sharding
 7. Fully sharded data parallel training
 
-Current implementation:
+Implemented code:
 
-- Imported and configured the Spring 2026 starter.
-- Recorded the ordered learning plan and CUDA-vs-macOS development boundary.
-- Added the model-size table, CLI configuration scaffold, and random GPU batch generation for the first benchmark task.
-- Next: three benchmark modes, warm-up, CUDA synchronization, mean and standard deviation.
+- Configurable forward, backward, and end-to-end benchmarks with warm-up, CUDA synchronization, and timing summaries.
+- Attention and memory profiling, mixed precision experiments, and activation checkpointing utilities.
+- Triton FlashAttention-2 forward and backward kernels with causal masking, plus comparison benchmarks.
+- Single-node All-Reduce benchmarking and DDP variants with individual, flattened, and overlapped gradient communication.
+- Optimizer state sharding and its memory/time benchmarking tools.
+- FSDP weight and gradient sharding, All-Gather, Reduce-Scatter, forward prefetching, and accounting/profiling tools.
+
+GPU/NCCL benchmark results, Nsight screenshots, and the corresponding experimental analysis remain to be added. The optional 8B-model leaderboard run has not been completed.
 
 ## Repository Layout
 
@@ -90,6 +96,7 @@ Current implementation:
 CS336-learn/
 ├── assignment1-basics/       # Tokenizer, Transformer, training and generation
 ├── assignment2-systems/      # Profiling, kernels and distributed systems
+├── assignment3-scaling/      # Scaling-law assignment starter and reference code
 ├── docs/readme/              # Reproducible README data and figures
 ├── OWT_EXPERIMENTS.md        # OpenWebText experiment history
 ├── TRAINING_EXPERIMENTS.md   # Training configurations and results
