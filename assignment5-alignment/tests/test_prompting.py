@@ -1,7 +1,7 @@
 import unittest
 
 from cs336_alignment.gsm8k import GSM8KExample
-from cs336_alignment.prompting import PROMPT_FILES, build_prompts
+from cs336_alignment.prompting import PROMPT_FILES, build_prompts, build_sampling_params
 
 
 class TestPrompting(unittest.TestCase):
@@ -32,6 +32,34 @@ class TestPrompting(unittest.TestCase):
     def test_rejects_unknown_prompt_name(self):
         with self.assertRaisesRegex(ValueError, "Unknown prompt name"):
             build_prompts([], "unknown")
+
+    def test_sampling_settings_match_each_prompt_style(self):
+        for prompt_name in PROMPT_FILES:
+            with self.subTest(prompt_name=prompt_name):
+                params = build_sampling_params(prompt_name, seed=42)
+                self.assertEqual(params["temperature"], 1.0)
+                self.assertEqual(params["top_p"], 1.0)
+                self.assertEqual(params["max_tokens"], 512)
+                self.assertEqual(params["n"], 1)
+                self.assertEqual(params["seed"], 42)
+                if prompt_name == "question_only":
+                    self.assertNotIn("stop", params)
+                    self.assertNotIn("include_stop_str_in_output", params)
+                else:
+                    self.assertEqual(params["stop"], ["</answer>"])
+                    self.assertTrue(params["include_stop_str_in_output"])
+
+    def test_sampling_params_are_independent_between_calls(self):
+        params = build_sampling_params("r1_zero")
+        params["stop"].append("OTHER_STOP")
+        params["max_tokens"] = 10
+        fresh_params = build_sampling_params("r1_zero")
+        self.assertEqual(fresh_params["stop"], ["</answer>"])
+        self.assertEqual(fresh_params["max_tokens"], 512)
+
+    def test_sampling_rejects_unknown_prompt_name(self):
+        with self.assertRaisesRegex(ValueError, "Unknown prompt name"):
+            build_sampling_params("unknown")
 
 
 if __name__ == "__main__":
