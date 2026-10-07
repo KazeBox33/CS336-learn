@@ -1,6 +1,6 @@
 import unittest
 
-from cs336_alignment.prompting_evaluation import score_response
+from cs336_alignment.prompting_evaluation import score_response, summarize_scores
 
 
 class TestPromptingEvaluation(unittest.TestCase):
@@ -53,6 +53,47 @@ class TestPromptingEvaluation(unittest.TestCase):
     def test_unknown_prompt_name_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "Unknown prompt name"):
             score_response("18", "18", "unknown")
+
+
+class TestPromptingSummary(unittest.TestCase):
+    def test_summarizes_real_grader_results_into_three_categories(self):
+        responses = [r"\boxed{18}", r"\boxed{18}", r"\boxed{17}", "18"]
+        scores = [score_response(response, "18", "question_only") for response in responses]
+        self.assertEqual(
+            summarize_scores(scores),
+            {
+                "num_responses": 4,
+                "num_correct": 2,
+                "num_format_only": 1,
+                "num_unformatted": 1,
+                "accuracy": 0.5,
+                "format_rate": 0.75,
+            },
+        )
+
+    def test_accepts_a_single_pass_iterator(self):
+        scores = (score_response("</think> <answer>18</answer>", "18", "r1_zero") for _ in range(3))
+        summary = summarize_scores(scores)
+        self.assertEqual(summary["num_responses"], 3)
+        self.assertEqual(summary["num_correct"], 3)
+        self.assertEqual(summary["accuracy"], 1.0)
+        self.assertEqual(summary["format_rate"], 1.0)
+
+    def test_formatted_wrong_answers_have_zero_accuracy(self):
+        summary = summarize_scores([score_response(r"\boxed{17}", "18", "question_only")])
+        self.assertEqual(summary["num_format_only"], 1)
+        self.assertEqual(summary["accuracy"], 0.0)
+        self.assertEqual(summary["format_rate"], 1.0)
+
+    def test_unformatted_correct_numbers_do_not_count_as_correct(self):
+        summary = summarize_scores([score_response("18", "18", "r1_zero_three_shot")])
+        self.assertEqual(summary["num_unformatted"], 1)
+        self.assertEqual(summary["accuracy"], 0.0)
+        self.assertEqual(summary["format_rate"], 0.0)
+
+    def test_empty_scores_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "empty set of scores"):
+            summarize_scores([])
 
 
 if __name__ == "__main__":
