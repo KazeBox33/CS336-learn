@@ -28,3 +28,10 @@ Initially, all tests should fail with `NotImplementedError`s.
 To connect your implementation to the tests, complete the
 functions in [./tests/adapters.py](./tests/adapters.py).
 
+## Prompting Baselines
+
+The inference-only GSM8K prompting experiment has a runnable entry point:
+`uv run python -m scripts.evaluate_prompting --help`.
+See [PROMPTING_BASELINES.md](./PROMPTING_BASELINES.md) for full-run commands,
+output formats, and the required manual analysis. GPU measurements and written
+conclusions remain pending; this does not implement the later GRPO assignment.
