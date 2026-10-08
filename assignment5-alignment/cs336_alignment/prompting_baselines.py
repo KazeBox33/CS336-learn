@@ -53,7 +53,7 @@ def evaluate_prompt(
             }
         )
     metrics = summarize_scores(record["scores"] for record in records)
-    metrics["num_length_limited"] = sum(
+    metrics["num_length_limited"] = sum( # 统计因限制长度而结束的数量
         record["finish_reason"] == "length" for record in records
     )
     return records, metrics
@@ -146,7 +146,7 @@ def run_prompting_baselines(
     _write_json(output_dir / "summary.json", summary)
     for name in names:
         logger.info("Evaluating %s on %d questions", name, len(examples))
-        records, metrics = evaluate_prompt(
+        records, metrics = evaluate_prompt( # 返回全部道题的各种情况 和 正确率等
             server, examples, name, seed=seed, batch_size=batch_size
         )
         _write_jsonl(output_dir / f"{name}.responses.jsonl", records)

@@ -8,11 +8,11 @@ from pathlib import Path
 from cs336_alignment.gsm8k import load_gsm8k
 from cs336_alignment.prompting import PROMPT_FILES
 
-ASSIGNMENT_DIR = Path(__file__).resolve().parents[1]
+ASSIGNMENT_DIR = Path(__file__).resolve().parents[1] # resolve是解析后的绝对路径
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__) # 使用开头说明
     parser.add_argument(
         "--model-id",
         required=True,
