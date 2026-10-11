@@ -1,3 +1,4 @@
+import torch
 from transformers import PreTrainedTokenizerBase
 
 
@@ -25,3 +26,36 @@ def _tokenize_pairs(
         token_sequences.append(prompt_tokens + output_tokens)
         prompt_lengths.append(len(prompt_tokens))
     return token_sequences, prompt_lengths
+
+
+def tokenize_prompt_and_output(
+    prompt_strs: list[str],
+    output_strs: list[str],
+    tokenizer: PreTrainedTokenizerBase,
+) -> dict[str, torch.Tensor]:
+    """Right-pad token pairs and align response masks with next-token labels."""
+    token_sequences, prompt_lengths = _tokenize_pairs(prompt_strs, output_strs, tokenizer)
+    if tokenizer.pad_token_id is None:
+        raise ValueError("The tokenizer must define a pad_token_id.")
+
+    max_length = max(len(tokens) for tokens in token_sequences)
+    if max_length == 0:
+        raise ValueError("The batch must contain at least one token.")
+
+    batch_shape = (len(token_sequences), max_length)
+    token_ids = torch.full(batch_shape, tokenizer.pad_token_id, dtype=torch.long)
+    response_mask = torch.zeros(batch_shape, dtype=torch.bool)
+
+    for row, (tokens, prompt_length) in enumerate(
+        zip(token_sequences, prompt_lengths, strict=True)
+    ):
+        sequence_length = len(tokens)
+        token_ids[row, :sequence_length] = torch.tensor(tokens, dtype=torch.long)
+        response_mask[row, prompt_length:sequence_length] = True # mask 标记回答为true
+
+    # Shift the mask with labels so the first response prediction is retained.
+    return {
+        "input_ids": token_ids[:, :-1],
+        "labels": token_ids[:, 1:],
+        "response_mask": response_mask[:, 1:],
+    }
