@@ -46,5 +46,27 @@ def compute_policy_gradient_loss(
         raise ValueError("Rewards or advantages must have shape (batch_size,) or (batch_size, 1).")
 
     # Treat rewards as fixed estimator weights, but retain the policy gradient.
-    per_token_loss = -weights.detach() * policy_log_probs
+    per_token_loss = -weights.detach() * policy_log_probs # （B，T）
     return per_token_loss, {}
+
+
+def aggregate_loss_across_microbatch(
+    per_token_policy_gradient_loss: torch.Tensor, # (B,T) 上面的损失矩阵
+    mask: torch.Tensor,
+    loss_normalization: Literal["sequence", "constant"] = "sequence",
+    normalization_constant: int | None = None,
+) -> torch.Tensor:
+    """Average masked token losses per response, then across the microbatch."""
+    if loss_normalization != "sequence":
+        raise NotImplementedError("This step supports only sequence loss normalization.")
+    if per_token_policy_gradient_loss.ndim != 2 or mask.shape != per_token_policy_gradient_loss.shape:
+        raise ValueError("Loss and mask must have the same (batch_size, sequence_length) shape.")
+    if per_token_policy_gradient_loss.shape[0] == 0:
+        raise ValueError("The microbatch must contain at least one response.")
+
+    response_mask = mask.bool()
+    masked_losses = per_token_policy_gradient_loss.masked_fill(~response_mask, 0.0)
+    # Empty responses contribute zero rather than an undefined 0 / 0.
+    response_lengths = response_mask.sum(dim=1).clamp_min(1) # 统计长度
+    sequence_losses = masked_losses.sum(dim=1) / response_lengths # 逐token损失，先对每个回答取平均
+    return sequence_losses.mean() # 再对回答取平均
