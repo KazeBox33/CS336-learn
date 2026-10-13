@@ -2,6 +2,9 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from cs336_alignment.gsm8k import GSM8KExample, load_gsm8k
+from cs336_alignment.prompting import build_prompts
+
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gsm8k"
 
@@ -60,3 +63,38 @@ class GRPOExperimentConfig:
     @property
     def train_batch_size(self) -> int:
         return self.rollout_batch_size
+
+
+@dataclass(frozen=True)
+class GRPOExperimentData:
+    train_examples: list[GSM8KExample]
+    val_examples: list[GSM8KExample]
+    train_prompts: list[str]
+    val_prompts: list[str]
+
+
+def load_experiment_data(config: GRPOExperimentConfig) -> GRPOExperimentData:
+    """Load fixed dataset subsets and aligned prompts without starting inference."""
+    if Path(config.train_path).resolve() == Path(config.val_path).resolve():
+        raise ValueError("Training and validation must use different dataset files.")
+
+    train_examples = load_gsm8k(config.train_path)
+    val_examples = load_gsm8k(config.val_path)
+    for name, examples, requested in (
+        ("training", train_examples, config.n_train_examples),
+        ("validation", val_examples, config.n_val_examples),
+    ):
+        if len(examples) < requested:
+            raise ValueError(
+                f"Requested {requested} {name} examples, but the dataset contains {len(examples)}."
+            )
+
+    # Keep subsets fixed across seeds; training batches will be sampled later.
+    train_examples = train_examples[:config.n_train_examples]
+    val_examples = val_examples[:config.n_val_examples]
+    return GRPOExperimentData(
+        train_examples=train_examples,
+        val_examples=val_examples,
+        train_prompts=build_prompts(train_examples, config.prompt_name),
+        val_prompts=build_prompts(val_examples, config.prompt_name),
+    )
