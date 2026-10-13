@@ -37,10 +37,12 @@ def test_matches_full_batch_loss_and_gradients_without_updating_parameters(
     reference_model = deepcopy(tiny_train_model)
     expected_loss = _whole_batch_backward(reference_model, batch, advantages)
     original_parameters = [p.detach().clone() for p in tiny_train_model.parameters()]
-    loss = _accumulate_microbatch_gradients(tiny_train_model, batch, advantages, steps)
+    loss, metadata = _accumulate_microbatch_gradients(tiny_train_model, batch, advantages, steps)
     torch.testing.assert_close(loss, expected_loss, rtol=1e-5, atol=1e-6)
     assert loss.shape == ()
     assert not loss.requires_grad
+    assert torch.isfinite(metadata["mean_token_entropy"])
+    assert not metadata["mean_token_entropy"].requires_grad
     for param, reference, original in zip(
         tiny_train_model.parameters(), reference_model.parameters(), original_parameters, strict=True
     ):
