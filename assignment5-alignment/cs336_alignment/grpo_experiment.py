@@ -2,6 +2,10 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+import torch
+from transformers import PreTrainedModel, PreTrainedTokenizerBase, set_seed
+
+from cs336_alignment.checkpoint import get_model_and_tokenizer
 from cs336_alignment.gsm8k import GSM8KExample, load_gsm8k
 from cs336_alignment.prompting import build_prompts
 
@@ -98,3 +102,22 @@ def load_experiment_data(config: GRPOExperimentConfig) -> GRPOExperimentData:
         train_prompts=build_prompts(train_examples, config.prompt_name),
         val_prompts=build_prompts(val_examples, config.prompt_name),
     )
+
+
+def initialize_training_components(
+    config: GRPOExperimentConfig,
+    device: str,
+) -> tuple[PreTrainedModel, PreTrainedTokenizerBase, torch.optim.AdamW]:
+    """Load the seeded training model and create the handout's AdamW optimizer."""
+    set_seed(config.seed)
+    model, tokenizer = get_model_and_tokenizer(config.model_id, device)
+    # Training scores complete sequences; generation caches belong to vLLM.
+    model.config.use_cache = False
+    model.train()
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        betas=(0.9, 0.95),
+        weight_decay=0.0,
+    )
+    return model, tokenizer, optimizer
