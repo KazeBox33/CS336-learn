@@ -226,3 +226,50 @@ def run_grpo_iteration(
         group_size=config.group_size,
     )
     return {"loss": loss, **metadata}, repeated_prompts, completions
+
+
+def evaluate_grpo_policy(
+    config: GRPOExperimentConfig,
+    data: GRPOExperimentData,
+    server: VLLMServer,
+    policy: torch.nn.Module,
+    reward_fn: Callable[[str, str], dict[str, float]],
+    *,
+    batch_size: int = 32, # 题目的数量
+) -> tuple[dict[str, int | float], list[VLLMCompletion]]:
+    """Evaluate current policy weights on fixed validation questions without training."""
+    if not data.val_examples or len(data.val_examples) != len(data.val_prompts):
+        raise ValueError("Validation examples and prompts must be non-empty and aligned.")
+    if batch_size <= 0:
+        raise ValueError("Validation batch_size must be positive.")
+
+    sampling_params = build_sampling_params(config.prompt_name, seed=config.seed)
+    sampling_params.update(
+        temperature=config.sampling_temperature,
+        max_tokens=config.sampling_max_tokens,
+        n=1,
+    )
+    # Training may have updated the policy after the last rollout generation.
+    server.sync_policy_weights(policy)
+    completions = server.generate_completions(
+        prompts=data.val_prompts, sampling_params=sampling_params, batch_size=batch_size
+    )
+    if len(completions) != len(data.val_examples):
+        raise RuntimeError(
+            f"Expected {len(data.val_examples)} validation responses, received {len(completions)}."
+        )
+
+    scores = [
+        reward_fn(completion.text, example.ground_truth)
+        for completion, example in zip(completions, data.val_examples, strict=True)
+    ]
+    count = len(completions)
+    metrics = {
+        "val_num_examples": count,
+        "val_mean_reward": sum(score["reward"] for score in scores) / count,
+        "val_mean_format_reward": sum(score["format_reward"] for score in scores) / count,
+        "val_accuracy": sum(score["answer_reward"] == 1.0 for score in scores) / count,
+        "val_mean_response_length": sum(len(item.token_ids) for item in completions) / count,
+        "val_length_limited_rate": sum(item.finish_reason == "length" for item in completions) / count,
+    }
+    return metrics, completions
