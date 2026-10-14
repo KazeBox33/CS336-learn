@@ -1,6 +1,7 @@
+import json
 import math
 import random
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -309,3 +310,23 @@ def run_grpo_training_loop( # grpo 外层循环
             )
             metrics.update(val_metrics)
         yield step, metrics
+
+
+def write_grpo_metrics(
+    steps: Iterable[tuple[int, dict[str, int | float]]], # 上一步生成的 step 和 metrics
+    output_path: str | Path,
+) -> int:
+    """Consume training steps and write one JSONL record per step without overwriting."""
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with output_path.open("x", encoding="utf-8") as file:
+        for step, metrics in steps:
+            if "step" in metrics:
+                raise ValueError("Metrics must not contain the reserved key 'step'.")
+            record = json.dumps({"step": step, **metrics}, allow_nan=False)
+            file.write(record + "\n")
+            # Flush each completed step before the generator begins the next update.
+            file.flush() # 把缓冲区的内容交给操作系统,再继续下一步训练
+            count += 1
+    return count
