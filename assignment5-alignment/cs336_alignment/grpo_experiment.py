@@ -273,3 +273,39 @@ def evaluate_grpo_policy(
         "val_length_limited_rate": sum(item.finish_reason == "length" for item in completions) / count,
     }
     return metrics, completions
+
+
+def run_grpo_training_loop( # grpo 外层循环
+    config: GRPOExperimentConfig,
+    data: GRPOExperimentData,
+    server: VLLMServer,
+    policy: torch.nn.Module,
+    tokenizer: PreTrainedTokenizerBase,
+    optimizer: torch.optim.Optimizer,
+    reward_fn: Callable[[str, str], dict[str, float]],
+    *,
+    validation_batch_size: int = 32,
+) -> Iterator[tuple[int, dict[str, int | float]]]:
+    """Yield scalar metrics before training and after each on-policy update."""
+    rng = random.Random(config.seed)
+    val_metrics, _ = evaluate_grpo_policy(
+        config, data, server, policy, reward_fn, batch_size=validation_batch_size
+    )
+    yield 0, val_metrics
+
+    for step in range(1, config.num_rollout_steps + 1):
+        train_metrics, _, _ = run_grpo_iteration(
+            config, data, server, policy, tokenizer, optimizer, reward_fn, rng=rng
+        )
+        # Detach and copy scalar metrics off the GPU before passing them to a logger.
+        metrics = {
+            f"train_{name}": float(value.detach().cpu().item())
+            if isinstance(value, torch.Tensor) else value
+            for name, value in train_metrics.items()
+        }
+        if step % config.eval_interval == 0 or step == config.num_rollout_steps:
+            val_metrics, _ = evaluate_grpo_policy(
+                config, data, server, policy, reward_fn, batch_size=validation_batch_size
+            )
+            metrics.update(val_metrics)
+        yield step, metrics
