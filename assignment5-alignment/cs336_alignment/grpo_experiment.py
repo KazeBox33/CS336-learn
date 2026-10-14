@@ -287,6 +287,7 @@ def run_grpo_training_loop( # grpo 外层循环
     *,
     validation_batch_size: int = 32,
     rollout_output_dir: str | Path | None = None,
+    on_step: Callable[[int, random.Random], None] | None = None,
 ) -> Iterator[tuple[int, dict[str, int | float]]]:
     """Yield scalar metrics before training and after each on-policy update."""
     rng = random.Random(config.seed)
@@ -318,6 +319,8 @@ def run_grpo_training_loop( # grpo 外层循环
             if rollout_output_dir is not None:
                 write_grpo_rollouts(step, "val", data.val_prompts, val_completions, rollout_output_dir)
             metrics.update(val_metrics)
+        if on_step is not None:
+            on_step(step, rng)
         yield step, metrics
 
 

@@ -72,6 +72,7 @@ def test_dry_run_loads_real_data_without_gpu_checks_or_output_files(cli, small_a
     ["--training-gpu", "1", "--inference-gpu", "1"],
     ["--inference-gpu", "-1"],
     ["--learning-rate", "nan"],
+    ["--checkpoint-interval", "0"],
 ])
 def test_invalid_arguments_fail_before_loading_data(cli, small_args, extra_args, monkeypatch):
     load = Mock()
@@ -118,6 +119,7 @@ def setup_fake_training(cli, monkeypatch):
     policy, tokenizer, optimizer, server = [Mock() for _ in range(4)]
     initialize = Mock(return_value=(policy, tokenizer, optimizer))
     monkeypatch.setattr(cli, "initialize_training_components", initialize)
+    monkeypatch.setattr(cli, "save_grpo_checkpoint", Mock(side_effect=lambda *args, **kwargs: args[4]))
     events = []
 
     @contextmanager
@@ -156,6 +158,8 @@ def test_cli_connects_loop_to_metrics_and_rollout_files(cli, small_args, tmp_pat
     assert manifest["num_metric_records"] == 3
     assert manifest["config"]["seed"] == 7
     assert manifest["training_device"] == "cuda:0"
+    assert manifest["last_checkpoint"] == "checkpoints/step_0002"
+    cli.save_grpo_checkpoint.assert_called_once()
     initialize.assert_called_once_with(initialize.call_args.args[0], "cuda:0")
     records = [json.loads(line) for line in (root / "metrics.jsonl").read_text().splitlines()]
     assert [record["step"] for record in records] == [0, 1, 2]
@@ -178,4 +182,29 @@ def test_training_failure_closes_server_and_does_not_mark_run_complete(cli, smal
     root = tmp_path / "run"
     assert json.loads((root / "run.json").read_text())["completed"] is False
     assert json.loads((root / "metrics.jsonl").read_text())["step"] == 0
+    assert events == ["start", "stop"]
+
+
+def test_periodic_checkpoints_use_updated_policy_and_do_not_duplicate_final_step(cli, small_args, tmp_path, monkeypatch):
+    _, policy, tokenizer, optimizer, _, _, events = setup_fake_training(cli, monkeypatch)
+    completion = VLLMCompletion("answer", [], "stop")
+    monkeypatch.setattr(grpo_experiment, "run_grpo_iteration", Mock(return_value=({"loss": 0.5}, ["TRAIN"], [completion])))
+    monkeypatch.setattr(grpo_experiment, "evaluate_grpo_policy", Mock(return_value=({"val_accuracy": 0.0}, [completion])))
+    cli.main([*small_args, "--checkpoint-interval", "1"])
+    calls = cli.save_grpo_checkpoint.call_args_list
+    assert [item.args[3] for item in calls] == [1, 2]
+    assert all(item.args[:3] == (policy, tokenizer, optimizer) for item in calls)
+    assert calls[0].kwargs["rng"] is calls[1].kwargs["rng"]
+    assert events == ["start", "stop"]
+
+
+def test_checkpoint_failure_keeps_run_incomplete_and_closes_server(cli, small_args, tmp_path, monkeypatch):
+    *_, events = setup_fake_training(cli, monkeypatch)
+    completion = VLLMCompletion("answer", [], "stop")
+    monkeypatch.setattr(grpo_experiment, "run_grpo_iteration", Mock(return_value=({"loss": 0.5}, ["TRAIN"], [completion])))
+    monkeypatch.setattr(grpo_experiment, "evaluate_grpo_policy", Mock(return_value=({"val_accuracy": 0.0}, [completion])))
+    cli.save_grpo_checkpoint.side_effect = RuntimeError("disk full")
+    with pytest.raises(RuntimeError, match="disk full"):
+        cli.main([*small_args, "--checkpoint-interval", "1"])
+    assert json.loads((tmp_path / "run" / "run.json").read_text())["completed"] is False
     assert events == ["start", "stop"]

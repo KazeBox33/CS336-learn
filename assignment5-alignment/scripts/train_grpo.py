@@ -8,6 +8,7 @@ from pathlib import Path
 import torch
 
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+from cs336_alignment.checkpoint import save_grpo_checkpoint
 from cs336_alignment.grpo_experiment import (
     GRPOExperimentConfig,
     initialize_training_components,
@@ -37,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--training-gpu", type=int, default=0)
     parser.add_argument("--inference-gpu", type=int, default=1)
     parser.add_argument("--validation-batch-size", type=int, default=32)
+    parser.add_argument("--checkpoint-interval", type=int, default=40)
     parser.add_argument("--dry-run", action="store_true", help="Check data and settings without loading a model")
     return parser
 
@@ -52,6 +54,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error(str(error))
     if args.validation_batch_size <= 0:
         parser.error("--validation-batch-size must be positive")
+    if args.checkpoint_interval <= 0:
+        parser.error("--checkpoint-interval must be positive")
     if min(args.training_gpu, args.inference_gpu) < 0 or args.training_gpu == args.inference_gpu:
         parser.error("Training and inference must use distinct non-negative GPU indices")
     if args.output_dir.exists():
@@ -64,6 +68,7 @@ def main(argv: list[str] | None = None) -> None:
         "training_device": f"cuda:{args.training_gpu}",
         "inference_gpu": args.inference_gpu,
         "validation_batch_size": args.validation_batch_size,
+        "checkpoint_interval": args.checkpoint_interval,
         "n_loaded_train_examples": len(data.train_examples),
         "n_loaded_val_examples": len(data.val_examples),
         "prompts_per_rollout_batch": config.prompts_per_rollout_batch,
@@ -80,11 +85,23 @@ def main(argv: list[str] | None = None) -> None:
     with manifest_path.open("x", encoding="utf-8") as file:
         json.dump(manifest, file, indent=2, allow_nan=False)
     policy, tokenizer, optimizer = initialize_training_components(config, manifest["training_device"])
+
+    def checkpoint_after_step(step, rng):
+        if step % args.checkpoint_interval == 0 or step == config.num_rollout_steps:
+            path = save_grpo_checkpoint(
+                policy, tokenizer, optimizer, step,
+                args.output_dir / "checkpoints" / f"step_{step:04d}", rng=rng,
+            )
+            manifest["last_checkpoint"] = str(path.relative_to(args.output_dir))
+            with manifest_path.open("w", encoding="utf-8") as file:
+                json.dump(manifest, file, indent=2, allow_nan=False)
+
     with open_rollout_server(config, policy, inference_gpu=args.inference_gpu) as server:
         steps = run_grpo_training_loop(
             config, data, server, policy, tokenizer, optimizer, r1_zero_reward_fn,
             validation_batch_size=args.validation_batch_size,
             rollout_output_dir=args.output_dir / "rollouts",
+            on_step=checkpoint_after_step,
         )
         count = write_grpo_metrics(steps, args.output_dir / "metrics.jsonl")
     manifest.update(completed=True, num_metric_records=count)
