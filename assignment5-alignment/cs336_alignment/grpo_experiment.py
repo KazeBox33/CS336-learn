@@ -210,7 +210,7 @@ def run_grpo_iteration(
     rng: random.Random,
 ) -> tuple[dict[str, torch.Tensor | float], list[str], list[VLLMCompletion]]:
     """Generate a fresh on-policy batch, update once, and retain samples for logging."""
-    repeated_prompts, completions, repeated_ground_truths = generate_training_rollouts(
+    repeated_prompts, completions, repeated_ground_truths = generate_training_rollouts( # vllm 那个gpu生成回答
         config, data, server, policy, rng=rng
     )
     rollout_responses = [completion.text for completion in completions]
