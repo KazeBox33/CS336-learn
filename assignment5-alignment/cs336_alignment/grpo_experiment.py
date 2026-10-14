@@ -1,4 +1,6 @@
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -8,6 +10,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase, set_seed
 from cs336_alignment.checkpoint import get_model_and_tokenizer
 from cs336_alignment.gsm8k import GSM8KExample, load_gsm8k
 from cs336_alignment.prompting import build_prompts
+from cs336_alignment.vllm_utils import VLLMServer
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gsm8k"
@@ -121,3 +124,31 @@ def initialize_training_components(
         weight_decay=0.0,
     )
     return model, tokenizer, optimizer
+
+
+@contextmanager
+def open_rollout_server(
+    config: GRPOExperimentConfig,
+    policy: torch.nn.Module,
+    *,
+    inference_gpu: int = 1,
+) -> Iterator[VLLMServer]:
+    """Own a vLLM server with initialized weight transfer and current policy weights."""
+    policy_device = next(policy.parameters()).device
+    if policy_device.type != "cuda":
+        raise ValueError("Weight synchronization requires a CUDA training model.")
+    if policy_device.index == inference_gpu:
+        raise ValueError("Training and inference must use different GPUs.")
+
+    server = VLLMServer(
+        model_id=config.model_id,
+        gpu=inference_gpu,
+        seed=config.seed,
+    )
+    try:
+        server.start()
+        server.init_weight_sync(str(policy_device))
+        server.sync_policy_weights(policy)
+        yield server
+    finally:
+        server.stop()
