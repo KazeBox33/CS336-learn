@@ -197,6 +197,7 @@ def generate_completions(
             "model": model_id,
             "prompt": prompt_batch,
             "temperature": sampling_params["temperature"],
+            "top_p": sampling_params.get("top_p", 1.0),
             "max_tokens": sampling_params["max_tokens"],
             "n": sampling_params["n"],
             "seed": sampling_params["seed"],
@@ -208,6 +209,9 @@ def generate_completions(
 
         response = _http_json("POST", f"{vllm_base_url}/v1/completions", payload, timeout=3600)
         choices = sorted(response["choices"], key=lambda choice: choice["index"])
+        expected_indices = list(range(len(prompt_batch) * sampling_params["n"]))
+        if [choice["index"] for choice in choices] != expected_indices:
+            raise RuntimeError("vLLM returned missing, duplicate, or unexpected completion indices.")
         completions.extend(
             VLLMCompletion(
                 text=choice["text"],

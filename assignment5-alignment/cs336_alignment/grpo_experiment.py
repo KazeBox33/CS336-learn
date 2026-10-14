@@ -1,4 +1,5 @@
 import math
+import random
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -9,8 +10,8 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase, set_seed
 
 from cs336_alignment.checkpoint import get_model_and_tokenizer
 from cs336_alignment.gsm8k import GSM8KExample, load_gsm8k
-from cs336_alignment.prompting import build_prompts
-from cs336_alignment.vllm_utils import VLLMServer
+from cs336_alignment.prompting import build_prompts, build_sampling_params
+from cs336_alignment.vllm_utils import VLLMCompletion, VLLMServer
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gsm8k"
@@ -152,3 +153,44 @@ def open_rollout_server(
         yield server
     finally:
         server.stop()
+
+
+def generate_training_rollouts(
+    config: GRPOExperimentConfig,
+    data: GRPOExperimentData,
+    server: VLLMServer,
+    policy: torch.nn.Module,
+    *,
+    rng: random.Random,
+) -> tuple[list[str], list[VLLMCompletion], list[str]]:
+    """Sample questions and return grouped prompts, completions, and reference answers."""
+    if not data.train_examples or len(data.train_examples) != len(data.train_prompts):
+        raise ValueError("Training examples and prompts must be non-empty and aligned.")
+
+    indices = rng.choices(
+        range(len(data.train_examples)), k=config.prompts_per_rollout_batch
+    )
+    prompts = [data.train_prompts[index] for index in indices]
+    ground_truths = [data.train_examples[index].ground_truth for index in indices]
+    sampling_params = build_sampling_params(
+        config.prompt_name, seed=rng.randrange(2**31)
+    )
+    sampling_params.update(
+        temperature=config.sampling_temperature,
+        max_tokens=config.sampling_max_tokens,
+        n=config.group_size,
+    )
+
+    # Every generation batch must use the current training weights.
+    server.sync_policy_weights(policy)
+    completions = server.generate_completions(
+        prompts=prompts, sampling_params=sampling_params
+    )
+    if len(completions) != config.rollout_batch_size:
+        raise RuntimeError(
+            f"Expected {config.rollout_batch_size} responses, received {len(completions)}."
+        )
+
+    repeated_prompts = [prompt for prompt in prompts for _ in range(config.group_size)]
+    repeated_ground_truths = [truth for truth in ground_truths for _ in range(config.group_size)]
+    return repeated_prompts, completions, repeated_ground_truths

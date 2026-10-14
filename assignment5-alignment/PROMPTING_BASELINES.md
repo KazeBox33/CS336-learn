@@ -61,7 +61,7 @@ uv run python -m scripts.evaluate_prompting \
 ## 生成与评分规则
 
 - 固定设置为 temperature=1.0、top-p=1.0、max_tokens=512、n=1；seed 默认 0。
-- 官方 helper 没有转发 `top_p`，本实现也没有修改它，因此 top-p 依赖服务默认值；连接已有服务时请确保默认 top-p 为 1.0。
+- 生成请求显式转发 `top_p`，本实验固定为 1.0。
 - 只有两种 r1 提示在 `</answer>` 处停止，并把停止字符串保留在回答中。
 - `question_only` 使用 boxed-answer grader；两种 r1 提示使用 r1 grader。
 - 使用官方严格格式规则，不额外修补输出或宽松匹配。
