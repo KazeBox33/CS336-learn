@@ -1,6 +1,6 @@
 import math
 import random
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +11,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase, set_seed
 from cs336_alignment.checkpoint import get_model_and_tokenizer
 from cs336_alignment.gsm8k import GSM8KExample, load_gsm8k
 from cs336_alignment.prompting import build_prompts, build_sampling_params
+from cs336_alignment.training import grpo_train_step
 from cs336_alignment.vllm_utils import VLLMCompletion, VLLMServer
 
 
@@ -172,7 +173,7 @@ def generate_training_rollouts(
     )
     prompts = [data.train_prompts[index] for index in indices]
     ground_truths = [data.train_examples[index].ground_truth for index in indices]
-    sampling_params = build_sampling_params(
+    sampling_params = build_sampling_params( # 生成配置
         config.prompt_name, seed=rng.randrange(2**31)
     )
     sampling_params.update(
@@ -191,6 +192,37 @@ def generate_training_rollouts(
             f"Expected {config.rollout_batch_size} responses, received {len(completions)}."
         )
 
-    repeated_prompts = [prompt for prompt in prompts for _ in range(config.group_size)]
+    repeated_prompts = [prompt for prompt in prompts for _ in range(config.group_size)] # 每个prompt和答案重复group_size次
     repeated_ground_truths = [truth for truth in ground_truths for _ in range(config.group_size)]
     return repeated_prompts, completions, repeated_ground_truths
+
+
+def run_grpo_iteration(
+    config: GRPOExperimentConfig,
+    data: GRPOExperimentData,
+    server: VLLMServer,
+    policy: torch.nn.Module,
+    tokenizer: PreTrainedTokenizerBase,
+    optimizer: torch.optim.Optimizer,
+    reward_fn: Callable[[str, str], dict[str, float]],
+    *,
+    rng: random.Random,
+) -> tuple[dict[str, torch.Tensor | float], list[str], list[VLLMCompletion]]:
+    """Generate a fresh on-policy batch, update once, and retain samples for logging."""
+    repeated_prompts, completions, repeated_ground_truths = generate_training_rollouts(
+        config, data, server, policy, rng=rng
+    )
+    rollout_responses = [completion.text for completion in completions]
+    loss, metadata = grpo_train_step(
+        model=policy,
+        tokenizer=tokenizer,
+        optimizer=optimizer,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
+        max_grad_norm=config.max_grad_norm,
+        reward_fn=reward_fn,
+        repeated_prompts=repeated_prompts,
+        rollout_responses=rollout_responses,
+        repeated_ground_truths=repeated_ground_truths,
+        group_size=config.group_size,
+    )
+    return {"loss": loss, **metadata}, repeated_prompts, completions
