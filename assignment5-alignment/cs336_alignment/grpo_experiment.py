@@ -286,18 +286,25 @@ def run_grpo_training_loop( # grpo 外层循环
     reward_fn: Callable[[str, str], dict[str, float]],
     *,
     validation_batch_size: int = 32,
+    rollout_output_dir: str | Path | None = None,
 ) -> Iterator[tuple[int, dict[str, int | float]]]:
     """Yield scalar metrics before training and after each on-policy update."""
     rng = random.Random(config.seed)
-    val_metrics, _ = evaluate_grpo_policy(
+    val_metrics, val_completions = evaluate_grpo_policy(
         config, data, server, policy, reward_fn, batch_size=validation_batch_size
     )
+    if rollout_output_dir is not None:
+        write_grpo_rollouts(0, "val", data.val_prompts, val_completions, rollout_output_dir)
     yield 0, val_metrics
 
     for step in range(1, config.num_rollout_steps + 1):
-        train_metrics, _, _ = run_grpo_iteration(
+        train_metrics, train_prompts, train_completions = run_grpo_iteration(
             config, data, server, policy, tokenizer, optimizer, reward_fn, rng=rng
         )
+        if rollout_output_dir is not None and (
+            step == 1 or step % config.rollout_log_interval == 0 or step == config.num_rollout_steps
+        ):
+            write_grpo_rollouts(step, "train", train_prompts, train_completions, rollout_output_dir)
         # Detach and copy scalar metrics off the GPU before passing them to a logger.
         metrics = {
             f"train_{name}": float(value.detach().cpu().item())
@@ -305,9 +312,11 @@ def run_grpo_training_loop( # grpo 外层循环
             for name, value in train_metrics.items()
         }
         if step % config.eval_interval == 0 or step == config.num_rollout_steps:
-            val_metrics, _ = evaluate_grpo_policy(
+            val_metrics, val_completions = evaluate_grpo_policy(
                 config, data, server, policy, reward_fn, batch_size=validation_batch_size
             )
+            if rollout_output_dir is not None:
+                write_grpo_rollouts(step, "val", data.val_prompts, val_completions, rollout_output_dir)
             metrics.update(val_metrics)
         yield step, metrics
 
@@ -330,3 +339,38 @@ def write_grpo_metrics(
             file.flush() # 把缓冲区的内容交给操作系统,再继续下一步训练
             count += 1
     return count
+
+
+def write_grpo_rollouts( # 具体的回答
+    step: int,
+    split: str, # train or val
+    prompts: list[str],
+    completions: list[VLLMCompletion],
+    output_dir: str | Path,
+) -> Path:
+    """Save an aligned batch of generated responses for qualitative inspection."""
+    if split not in ("train", "val"):
+        raise ValueError("Rollout split must be 'train' or 'val'.")
+    if step < 0 or (split == "train" and step == 0):
+        raise ValueError("Rollout step must be non-negative; training steps start at 1.")
+    if not prompts or len(prompts) != len(completions):
+        raise ValueError("Rollout prompts and completions must be non-empty and aligned.")
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{split}_step_{step:04d}.jsonl"
+    # Training rollouts precede the update; validation uses the updated policy.
+    policy_step = step - 1 if split == "train" else step
+    with output_path.open("x", encoding="utf-8") as file:
+        for index, (prompt, completion) in enumerate(zip(prompts, completions, strict=True)):
+            record = {
+                "step": step,
+                "policy_step": policy_step,
+                "split": split,
+                "response_index": index,
+                "prompt": prompt,
+                "response": completion.text,
+                "token_ids": completion.token_ids,
+                "finish_reason": completion.finish_reason,
+            }
+            file.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
+    return output_path
