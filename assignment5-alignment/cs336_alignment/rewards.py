@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 from typing import Literal
 
@@ -37,15 +38,19 @@ def compute_group_normalized_rewards( # advantage_normalization
     advantage_eps: float = 1e-6,
     advantage_normalizer: Literal["std", "none", "mean"] = "std",
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    """Compute standard GRPO advantages within each prompt's response group."""
-    if baseline != "mean" or advantage_normalizer != "std":
-        raise NotImplementedError("This step supports only mean baseline and std normalization.")
+    """Apply the chosen baseline and optional std normalization within each group."""
+    if baseline not in ("mean", "none"):
+        raise ValueError("baseline must be 'mean' or 'none'.")
+    if advantage_normalizer not in ("std", "none"):
+        raise NotImplementedError("Only std and none advantage normalization are implemented.")
     if raw_rewards.ndim != 1 or raw_rewards.numel() == 0:
         raise ValueError("raw_rewards must be a non-empty one-dimensional tensor.")
     if group_size <= 0 or raw_rewards.numel() % group_size != 0:
         raise ValueError("group_size must be positive and divide the number of rewards.")
-    if advantage_eps <= 0:
-        raise ValueError("advantage_eps must be positive.")
+    if advantage_normalizer == "std" and (
+        not math.isfinite(advantage_eps) or advantage_eps <= 0
+    ):
+        raise ValueError("advantage_eps must be finite and positive for std normalization.")
 
     grouped_rewards = raw_rewards.float().reshape(-1, group_size)
     group_means = grouped_rewards.mean(dim=1, keepdim=True)
@@ -53,7 +58,11 @@ def compute_group_normalized_rewards( # advantage_normalization
     group_stds = grouped_rewards.std(
         dim=1, keepdim=True, correction=1 if group_size > 1 else 0
     ) # 使用样本标准差
-    advantages = (grouped_rewards - group_means) / (group_stds + advantage_eps)
+    advantages = grouped_rewards
+    if baseline == "mean":
+        advantages = advantages - group_means
+    if advantage_normalizer == "std":
+        advantages = advantages / (group_stds + advantage_eps)
     metadata = {
         "mean_reward": grouped_rewards.mean().item(),
         "mean_group_std": group_stds.mean().item(),
