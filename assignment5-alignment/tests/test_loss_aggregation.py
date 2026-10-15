@@ -71,8 +71,60 @@ def test_rejects_invalid_shapes_or_an_empty_batch(loss_shape, mask_shape):
         aggregate_loss_across_microbatch(torch.zeros(loss_shape), torch.zeros(mask_shape))
 
 
-def test_constant_normalization_is_reserved_for_a_later_step():
-    with pytest.raises(NotImplementedError):
+@pytest.mark.parametrize("mask_dtype", [torch.bool, torch.float32])
+def test_constant_normalization_divides_total_masked_loss_without_batch_averaging(mask_dtype):
+    losses = torch.tensor([[99.0, 2.0, 4.0, 99.0], [8.0, 99.0, 99.0, 99.0]])
+    mask = torch.tensor([[0, 1, 1, 0], [1, 0, 0, 0]], dtype=mask_dtype)
+    original = losses.clone()
+    result = aggregate_loss_across_microbatch(losses, mask, "constant", 4)
+    torch.testing.assert_close(result, torch.tensor(3.5))
+    torch.testing.assert_close(losses, original)
+    assert result.shape == ()
+
+
+def test_constant_normalization_assigns_equal_gradient_weights_to_included_tokens():
+    losses = torch.zeros((2, 3), requires_grad=True)
+    mask = torch.tensor([[True, True, False], [False, True, False]])
+    result = aggregate_loss_across_microbatch(losses, mask, "constant", 4)
+    result.backward()
+    torch.testing.assert_close(losses.grad, mask.float() / 4)
+
+
+def test_constant_normalization_ignores_masked_nonfinite_values():
+    losses = torch.tensor([[float("nan"), 2.0, float("inf")]], requires_grad=True)
+    mask = torch.tensor([[False, True, False]])
+    result = aggregate_loss_across_microbatch(losses, mask, "constant", 4)
+    torch.testing.assert_close(result, torch.tensor(0.5))
+    result.backward()
+    torch.testing.assert_close(losses.grad, torch.tensor([[0.0, 0.25, 0.0]]))
+
+
+def test_constant_normalization_empty_responses_contribute_zero():
+    losses = torch.tensor([[4.0, 99.0], [99.0, 99.0]], requires_grad=True)
+    mask = torch.tensor([[True, False], [False, False]])
+    result = aggregate_loss_across_microbatch(losses, mask, "constant", 4)
+    torch.testing.assert_close(result, torch.tensor(1.0))
+    result.backward()
+    torch.testing.assert_close(losses.grad, mask.float() / 4)
+
+
+def test_constant_normalization_all_empty_responses_produce_differentiable_zero():
+    losses = torch.ones((2, 3), requires_grad=True)
+    result = aggregate_loss_across_microbatch(losses, torch.zeros_like(losses), "constant", 4)
+    torch.testing.assert_close(result, torch.tensor(0.0))
+    result.backward()
+    torch.testing.assert_close(losses.grad, torch.zeros_like(losses))
+
+
+@pytest.mark.parametrize("constant", [None, 0, -1, float("nan"), float("inf")])
+def test_constant_normalization_requires_a_finite_positive_denominator(constant):
+    with pytest.raises(ValueError, match="finite and positive"):
         aggregate_loss_across_microbatch(
-            torch.ones((1, 2)), torch.ones((1, 2)), loss_normalization="constant", normalization_constant=42
+            torch.ones((1, 2)), torch.ones((1, 2)), "constant", constant
         )
+
+
+def test_sequence_normalization_does_not_use_the_constant_argument():
+    losses = torch.tensor([[2.0, 4.0]])
+    result = aggregate_loss_across_microbatch(losses, torch.ones_like(losses), "sequence", 0)
+    torch.testing.assert_close(result, torch.tensor(3.0))

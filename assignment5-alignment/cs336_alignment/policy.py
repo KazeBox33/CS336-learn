@@ -1,3 +1,4 @@
+import math
 from typing import Literal
 
 import torch
@@ -56,9 +57,9 @@ def aggregate_loss_across_microbatch(
     loss_normalization: Literal["sequence", "constant"] = "sequence",
     normalization_constant: int | None = None,
 ) -> torch.Tensor:
-    """Average masked token losses per response, then across the microbatch."""
-    if loss_normalization != "sequence":
-        raise NotImplementedError("This step supports only sequence loss normalization.")
+    """Reduce masked token losses using per-response means or a fixed total denominator."""
+    if loss_normalization not in ("sequence", "constant"):
+        raise NotImplementedError("Only sequence and constant loss normalization are implemented.")
     if per_token_policy_gradient_loss.ndim != 2 or mask.shape != per_token_policy_gradient_loss.shape:
         raise ValueError("Loss and mask must have the same (batch_size, sequence_length) shape.")
     if per_token_policy_gradient_loss.shape[0] == 0:
@@ -66,6 +67,12 @@ def aggregate_loss_across_microbatch(
 
     response_mask = mask.bool()
     masked_losses = per_token_policy_gradient_loss.masked_fill(~response_mask, 0.0)
+    if loss_normalization == "constant": # 常数
+        if normalization_constant is None or (
+            not math.isfinite(normalization_constant) or normalization_constant <= 0
+        ):
+            raise ValueError("normalization_constant must be finite and positive for constant normalization.")
+        return masked_losses.sum() / normalization_constant
     # Empty responses contribute zero rather than an undefined 0 / 0.
     response_lengths = response_mask.sum(dim=1).clamp_min(1) # 统计长度
     sequence_losses = masked_losses.sum(dim=1) / response_lengths # 逐token损失，先对每个回答取平均
