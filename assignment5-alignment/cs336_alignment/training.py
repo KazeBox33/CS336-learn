@@ -1,5 +1,5 @@
-from collections.abc import Callable
 import math
+from collections.abc import Callable
 from typing import Literal
 
 import torch
@@ -10,7 +10,10 @@ from cs336_alignment.policy import (
     compute_policy_gradient_loss,
     get_response_log_probs,
 )
-from cs336_alignment.rewards import compute_group_normalized_rewards, compute_rollout_rewards
+from cs336_alignment.rewards import (
+    compute_group_normalized_rewards,
+    compute_rollout_rewards,
+)
 from cs336_alignment.tokenization import tokenize_prompt_and_output
 
 
@@ -22,8 +25,10 @@ def _prepare_rollout_batch(
     repeated_ground_truths: list[str],
     group_size: int, # 每道题的回答量
     advantage_eps: float = 1e-6,
+    baseline: Literal["mean", "none"] = "mean",
+    advantage_normalizer: Literal["std", "none", "mean"] = "std",
 ) -> tuple[dict[str, torch.Tensor], torch.Tensor, dict[str, float]]:
-    """Prepare CPU token batches and standard GRPO advantages before microbatching."""
+    """Prepare CPU tokens and full-group advantages before pruning or microbatching."""
     batch_size = len(rollout_responses)
     if batch_size == 0:
         raise ValueError("The rollout batch must contain at least one response.")
@@ -36,7 +41,8 @@ def _prepare_rollout_batch(
         reward_fn, rollout_responses, repeated_ground_truths
     )
     advantages, advantage_metadata = compute_group_normalized_rewards(  # 算advantage
-        raw_rewards, group_size, advantage_eps=advantage_eps
+        raw_rewards, group_size, baseline=baseline, advantage_eps=advantage_eps,
+        advantage_normalizer=advantage_normalizer,
     )
     token_batch = tokenize_prompt_and_output(repeated_prompts, rollout_responses, tokenizer)
     reward_metadata.update(advantage_metadata)
@@ -48,13 +54,28 @@ def _accumulate_microbatch_gradients(
     token_batch: dict[str, torch.Tensor],
     advantages: torch.Tensor,
     gradient_accumulation_steps: int,
+    loss_normalization: Literal["sequence", "constant"] = "sequence",
+    normalization_constant: int | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Accumulate gradients and return detached logs; caller handles mode and updates."""
+    """Backpropagate nonzero advantages with the original batch's loss denominator.
+
+    Entropy is measured only on retained responses. For an all-zero batch, dense
+    language-model parameters receive explicit zero gradients so optimizer state
+    and weight decay still advance as they do after a zero-loss backward pass.
+    """
     batch_size = advantages.numel()
     if advantages.ndim != 1 or batch_size == 0:
         raise ValueError("advantages must be a non-empty one-dimensional tensor.")
     if not 1 <= gradient_accumulation_steps <= batch_size:
         raise ValueError("gradient_accumulation_steps must be between 1 and batch_size.")
+    if loss_normalization not in ("sequence", "constant"):
+        raise NotImplementedError("Only sequence and constant loss normalization are implemented.")
+    if loss_normalization == "constant" and (
+        normalization_constant is None
+        or not math.isfinite(normalization_constant)
+        or normalization_constant <= 0
+    ):
+        raise ValueError("normalization_constant must be finite and positive for constant normalization.")
     shape = token_batch["input_ids"].shape
     if len(shape) != 2 or shape[0] != batch_size or any(
         token_batch[key].shape != shape for key in ("labels", "response_mask")
@@ -64,10 +85,20 @@ def _accumulate_microbatch_gradients(
     device = next(model.parameters()).device
     total_loss = torch.zeros((), device=device)
     total_entropy = torch.zeros((), device=device)
+    response_tokens = torch.zeros((), device=device)
+    active_indices = advantages.nonzero(as_tuple=True)[0] # 找到 advantage不为0的下标
+    if active_indices.numel() == 0:
+        for parameter in model.parameters():
+            if parameter.requires_grad and parameter.grad is None:
+                parameter.grad = torch.zeros_like(parameter) # 无梯度变化
+    microbatch_sizes = [chunk.numel() for chunk in advantages.tensor_split(gradient_accumulation_steps)]
     start = 0
-    for microbatch_advantages in advantages.tensor_split(gradient_accumulation_steps): # 均衡切分
-        end = start + microbatch_advantages.numel()
-        microbatch = {key: tensor[start:end].to(device) for key, tensor in token_batch.items()} # 字典推导式
+    for microbatch_size in microbatch_sizes:
+        indices = active_indices[start:start + microbatch_size]
+        if indices.numel() == 0:
+            break
+        microbatch_advantages = advantages[indices]
+        microbatch = {key: tensor[indices].to(device) for key, tensor in token_batch.items()} # 字典推导式
         scores = get_response_log_probs(
             model, microbatch["input_ids"], microbatch["labels"], return_token_entropy=True
         ) # 算 label的 log_prob
@@ -76,14 +107,19 @@ def _accumulate_microbatch_gradients(
         token_losses, _ = compute_policy_gradient_loss(
             microbatch_advantages.to(device), scores["log_probs"]
         )
-        loss = aggregate_loss_across_microbatch(token_losses, microbatch["response_mask"]) # 得出这个批次的loss
-        weighted_loss = loss * ((end - start) / batch_size)
+        loss = aggregate_loss_across_microbatch( # 得出这个批次的loss
+            token_losses, microbatch["response_mask"], loss_normalization, normalization_constant
+        )
+        # Sequence means retain the original batch size; constant sums already use Z.
+        weighted_loss = (
+            loss * (indices.numel() / batch_size) if loss_normalization == "sequence" else loss # advantage 为0的就不算了
+        )
         weighted_loss.backward()
         total_loss += weighted_loss.detach()
         total_entropy += token_entropy.masked_fill(~microbatch["response_mask"], 0.0).sum()
-        start = end
-    response_tokens = token_batch["response_mask"].sum().clamp_min(1).to(device)
-    return total_loss, {"mean_token_entropy": total_entropy / response_tokens}
+        response_tokens += microbatch["response_mask"].sum()
+        start += indices.numel()
+    return total_loss, {"mean_token_entropy": total_entropy / response_tokens.clamp_min(1)}
 
 
 def grpo_train_step(
@@ -106,26 +142,22 @@ def grpo_train_step(
     loss_normalization: Literal["sequence", "constant"] = "sequence",
     normalization_constant: int | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
-    """Perform one standard on-policy GRPO update and return detached logging values."""
-    if (baseline, advantage_normalizer, importance_reweighting_method, loss_normalization) != (
-        "mean", "std", "none", "sequence"
-    ):
-        raise NotImplementedError("This step supports only standard on-policy GRPO.")
+    """Perform one on-policy update using the requested advantage and loss variants."""
+    if importance_reweighting_method != "none":
+        raise NotImplementedError("This step supports only on-policy training without reweighting.")
     if not 1 <= gradient_accumulation_steps <= len(rollout_responses):
         raise ValueError("gradient_accumulation_steps must be between 1 and the rollout batch size.")
     if max_grad_norm is not None and (not math.isfinite(max_grad_norm) or max_grad_norm < 0):
         raise ValueError("max_grad_norm must be finite and non-negative, or None.")
-    if not math.isfinite(advantage_eps) or advantage_eps <= 0:
-        raise ValueError("advantage_eps must be finite and positive.")
-
     token_batch, advantages, metadata = _prepare_rollout_batch(
         tokenizer, reward_fn, repeated_prompts, rollout_responses, repeated_ground_truths,
-        group_size, advantage_eps,
+        group_size, advantage_eps, baseline, advantage_normalizer,
     )
     model.train()
     optimizer.zero_grad(set_to_none=True)
     loss, accumulation_metadata = _accumulate_microbatch_gradients(
-        model, token_batch, advantages, gradient_accumulation_steps
+        model, token_batch, advantages, gradient_accumulation_steps,
+        loss_normalization, normalization_constant,
     )
     # An infinite limit reports the norm without clipping when clipping is disabled.
     grad_norm = torch.nn.utils.clip_grad_norm_(

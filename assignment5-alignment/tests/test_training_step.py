@@ -75,10 +75,12 @@ def test_update_matches_full_batch_and_logs_pre_update_statistics(
 @pytest.mark.parametrize(
     "kwargs, error",
     [
-        ({"baseline": "none"}, NotImplementedError),
-        ({"advantage_normalizer": "none"}, NotImplementedError),
+        ({"baseline": "invalid"}, ValueError),
+        ({"advantage_normalizer": "invalid"}, NotImplementedError),
         ({"importance_reweighting_method": "grpo"}, NotImplementedError),
-        ({"loss_normalization": "constant"}, NotImplementedError),
+        ({"loss_normalization": "constant"}, ValueError),
+        ({"loss_normalization": "invalid"}, NotImplementedError),
+        ({"loss_normalization": "constant", "normalization_constant": 0}, ValueError),
         ({"gradient_accumulation_steps": 0}, ValueError),
         ({"gradient_accumulation_steps": 5}, ValueError),
         ({"max_grad_norm": -1.0}, ValueError),
