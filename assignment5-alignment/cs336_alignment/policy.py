@@ -34,9 +34,9 @@ def compute_policy_gradient_loss(
     cliprange: float | None = None,
     response_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Return on-policy token losses; masking and aggregation happen separately."""
-    if importance_reweighting_method != "none":
-        raise NotImplementedError("This step supports only on-policy loss without reweighting.")
+    """Return token losses; response masking and aggregation happen separately."""
+    if importance_reweighting_method not in ("none", "noclip", "grpo"):
+        raise NotImplementedError("Only none, noclip, and grpo reweighting are implemented.")
     if policy_log_probs.ndim != 2:
         raise ValueError("policy_log_probs must have shape (batch_size, sequence_length).")
 
@@ -46,9 +46,21 @@ def compute_policy_gradient_loss(
     if weights.shape != (policy_log_probs.shape[0], 1):
         raise ValueError("Rewards or advantages must have shape (batch_size,) or (batch_size, 1).")
 
-    # Treat rewards as fixed estimator weights, but retain the policy gradient.
-    per_token_loss = -weights.detach() * policy_log_probs # （B，T）
-    return per_token_loss, {}
+    # Treat rewards and the sampling policy as fixed, but retain current-policy gradients.
+    weights = weights.detach()
+    if importance_reweighting_method == "none":
+        return -weights * policy_log_probs, {}
+
+    if old_log_probs is None or old_log_probs.shape != policy_log_probs.shape:
+        raise ValueError("old_log_probs must have the same shape as policy_log_probs.")
+    ratio = (policy_log_probs - old_log_probs.detach()).exp()
+    objective = weights * ratio
+    if importance_reweighting_method == "grpo":
+        if cliprange is None or not math.isfinite(cliprange) or cliprange < 0:
+            raise ValueError("cliprange must be finite and non-negative for grpo reweighting.")
+        clipped_ratio = ratio.clamp(1 - cliprange, 1 + cliprange)
+        objective = torch.minimum(objective, weights * clipped_ratio)
+    return -objective, {}
 
 
 def aggregate_loss_across_microbatch(
