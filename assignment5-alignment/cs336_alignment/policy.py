@@ -64,7 +64,11 @@ def compute_policy_gradient_loss(
     cliprange: float | None = None,
     response_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Return token losses; response masking and aggregation happen separately."""
+    """Return token losses and detached clipping counts over nonzero-advantage responses.
+
+    Clipping counts use response tokens for GRPO and whole responses for GSPO.
+    Loss masking and aggregation happen separately.
+    """
     if importance_reweighting_method not in ("none", "noclip", "grpo", "gspo"):
         raise NotImplementedError("Unknown importance reweighting method.")
     if policy_log_probs.ndim != 2:
@@ -97,12 +101,30 @@ def compute_policy_gradient_loss(
     else:
         ratio = log_ratio.exp()
     objective = weights * ratio
+    metadata = {}
     if importance_reweighting_method in ("grpo", "gspo"): # grpo 和 gspo 还要裁剪一下
         if cliprange is None or not math.isfinite(cliprange) or cliprange < 0:
             raise ValueError("cliprange must be finite and non-negative for clipped reweighting.")
         clipped_ratio = ratio.clamp(1 - cliprange, 1 + cliprange)
         objective = torch.minimum(objective, weights * clipped_ratio)
-    return -objective, {}
+        with torch.no_grad(): # 下面是clip的
+            valid = torch.ones_like(ratio, dtype=torch.bool) if response_mask is None else response_mask.bool()
+            if valid.shape != ratio.shape:
+                raise ValueError("response_mask must match policy_log_probs.")
+            valid = valid & (weights != 0)
+            clipped = ((weights > 0) & (ratio > 1 + cliprange)) | ((weights < 0) & (ratio < 1 - cliprange))
+            if importance_reweighting_method == "gspo":
+                # The shared ratio is broadcast for the loss, not for counting responses.
+                valid = valid.any(dim=-1, keepdim=True)
+                clipped = clipped[:, :1]
+            count = valid.sum()
+            clipped_count = (clipped & valid).sum()
+            metadata = {
+                "clipped_unit_count": clipped_count,
+                "clip_unit_count": count,
+                "clip_fraction": clipped_count.float() / count.clamp_min(1),
+            }
+    return -objective, metadata
 
 
 def aggregate_loss_across_microbatch(

@@ -1,6 +1,7 @@
 import json
 import math
 import random
+import time
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -321,6 +322,13 @@ def evaluate_grpo_policy(
     return metrics, completions
 
 
+def _synchronize_policy(policy: torch.nn.Module) -> None:
+    if isinstance(policy, torch.nn.Module):
+        device = next(policy.parameters()).device
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)
+
+
 def run_grpo_training_loop( # grpo 外层循环
     config: GRPOExperimentConfig,
     data: GRPOExperimentData,
@@ -336,17 +344,27 @@ def run_grpo_training_loop( # grpo 外层循环
 ) -> Iterator[tuple[int, dict[str, int | float]]]:
     """Yield metrics per rollout batch; validation and checkpoint intervals use this counter."""
     rng = random.Random(config.seed)
+    _synchronize_policy(policy)
+    started = time.perf_counter()
     val_metrics, val_completions = evaluate_grpo_policy(
         config, data, server, policy, reward_fn, batch_size=validation_batch_size
     )
+    _synchronize_policy(policy)
+    validation_seconds = time.perf_counter() - started
     if rollout_output_dir is not None:
         write_grpo_rollouts(0, "val", data.val_prompts, val_completions, rollout_output_dir)
-    yield 0, val_metrics
+    _synchronize_policy(policy)
+    elapsed = time.perf_counter() - started
+    yield 0, {**val_metrics, "val_seconds": validation_seconds, "elapsed_seconds": elapsed, "optimizer_updates": 0}
 
     for step in range(1, config.num_rollout_steps + 1):
+        _synchronize_policy(policy)
+        started = time.perf_counter()
         train_metrics, train_prompts, train_completions = run_grpo_iteration(
             config, data, server, policy, tokenizer, optimizer, reward_fn, rng=rng
         )
+        _synchronize_policy(policy)
+        iteration_seconds = time.perf_counter() - started
         if rollout_output_dir is not None and (
             step == 1 or step % config.rollout_log_interval == 0 or step == config.num_rollout_steps
         ):
@@ -360,10 +378,17 @@ def run_grpo_training_loop( # grpo 外层循环
             if isinstance(value, torch.Tensor) else value
             for name, value in train_metrics.items()
         }
+        metrics.update(
+            train_iteration_seconds=iteration_seconds,
+            optimizer_updates=step * config.optimizer_steps_per_rollout,
+        )
         if step % config.eval_interval == 0 or step == config.num_rollout_steps:
+            validation_started = time.perf_counter()
             val_metrics, val_completions = evaluate_grpo_policy(
                 config, data, server, policy, reward_fn, batch_size=validation_batch_size
             )
+            _synchronize_policy(policy)
+            metrics["val_seconds"] = time.perf_counter() - validation_started
             if rollout_output_dir is not None:
                 write_grpo_rollouts(
                     step, "val", data.val_prompts, val_completions, rollout_output_dir,
@@ -372,6 +397,9 @@ def run_grpo_training_loop( # grpo 外层循环
             metrics.update(val_metrics)
         if on_step is not None:
             on_step(step, rng)
+        _synchronize_policy(policy)
+        elapsed += time.perf_counter() - started
+        metrics["elapsed_seconds"] = elapsed
         yield step, metrics
 
 

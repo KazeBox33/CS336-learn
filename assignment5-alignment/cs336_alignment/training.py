@@ -101,6 +101,8 @@ def _accumulate_microbatch_gradients(
     total_loss = torch.zeros((), device=device)
     total_entropy = torch.zeros((), device=device)
     response_tokens = torch.zeros((), device=device)
+    clipped_units = torch.zeros((), device=device)
+    clip_units = torch.zeros((), device=device)
     active_indices = advantages.nonzero(as_tuple=True)[0] # 找到 advantage不为0的下标
     if active_indices.numel() == 0:
         for parameter in model.parameters():
@@ -123,7 +125,7 @@ def _accumulate_microbatch_gradients(
         if importance_reweighting_method != "none":
             # Pruning must select the same response rows from both policies' scores.
             microbatch_old_log_probs = old_log_probs.detach()[indices.to(old_log_probs.device)].to(device) # 把行索引放到旧评分所在的设备
-        token_losses, _ = compute_policy_gradient_loss(
+        token_losses, loss_metadata = compute_policy_gradient_loss(
             microbatch_advantages.to(device), scores["log_probs"],
             importance_reweighting_method=importance_reweighting_method,
             old_log_probs=microbatch_old_log_probs,
@@ -141,8 +143,17 @@ def _accumulate_microbatch_gradients(
         total_loss += weighted_loss.detach()
         total_entropy += token_entropy.masked_fill(~microbatch["response_mask"], 0.0).sum()
         response_tokens += microbatch["response_mask"].sum()
+        if "clip_unit_count" in loss_metadata:
+            clipped_units += loss_metadata["clipped_unit_count"]
+            clip_units += loss_metadata["clip_unit_count"]
         start += indices.numel()
-    return total_loss, {"mean_token_entropy": total_entropy / response_tokens.clamp_min(1)}
+    metadata = {"mean_token_entropy": total_entropy / response_tokens.clamp_min(1)}
+    if importance_reweighting_method in ("grpo", "gspo"):
+        metadata.update(
+            clipped_unit_count=clipped_units, clip_unit_count=clip_units,
+            clip_fraction=clipped_units / clip_units.clamp_min(1),
+        )
+    return total_loss, metadata
 
 
 def _update_policy_from_batch(
@@ -260,6 +271,8 @@ def train_rollout_batch(
     max_norm = torch.zeros_like(total_loss)
     total_entropy = torch.zeros_like(total_loss)
     total_tokens = torch.zeros_like(total_loss)
+    clipped_units = torch.zeros_like(total_loss)
+    clip_units = torch.zeros_like(total_loss)
     num_updates = batch_size // train_batch_size
     for start in range(0, batch_size, train_batch_size):
         stop = start + train_batch_size
@@ -277,9 +290,18 @@ def train_rollout_batch(
         active_tokens = minibatch["response_mask"][minibatch_advantages != 0].bool().sum().to(device) # 有效token数
         total_entropy += metadata["mean_token_entropy"] * active_tokens
         total_tokens += active_tokens
-    return total_loss, {
+        if "clip_unit_count" in metadata:
+            clipped_units += metadata["clipped_unit_count"]
+            clip_units += metadata["clip_unit_count"]
+    result = {
         "grad_norm": total_norm,
         "grad_norm_max": max_norm,
         "mean_token_entropy": total_entropy / total_tokens.clamp_min(1),
         "optimizer_steps": num_updates,
     }
+    if importance_reweighting_method in ("grpo", "gspo"):
+        result.update(
+            clipped_unit_count=clipped_units, clip_unit_count=clip_units,
+            clip_fraction=clipped_units / clip_units.clamp_min(1),
+        )
+    return total_loss, result

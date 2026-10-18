@@ -35,3 +35,9 @@ The inference-only GSM8K prompting experiment has a runnable entry point:
 See [PROMPTING_BASELINES.md](./PROMPTING_BASELINES.md) for full-run commands,
 output formats, and the required manual analysis. GPU measurements and written
 conclusions remain pending; this does not implement the later GRPO assignment.
+
+## Off-Policy GRPO Experiments
+
+See [OFF_POLICY_EXPERIMENT_GUIDE.md](./OFF_POLICY_EXPERIMENT_GUIDE.md) for the
+four-method experiment plan, clip-fraction definitions, timing, and comparison
+reports. The planner prints commands by default; real GPU experiments remain pending.

@@ -101,7 +101,14 @@ def test_writer_consumes_training_loop_and_preserves_sparse_validation_metrics(m
     path = tmp_path / "metrics.jsonl"
     loop = run_grpo_training_loop(config, *[Mock() for _ in range(6)])
     assert write_grpo_metrics(loop, path) == 4
-    assert read_records(path) == [
+    records = read_records(path)
+    assert [record["optimizer_updates"] for record in records] == [0, 1, 2, 3]
+    assert all(record["elapsed_seconds"] >= 0 for record in records)
+    assert [record["step"] for record in records if "val_seconds" in record] == [0, 2, 3]
+    stripped = [{key: value for key, value in record.items() if key not in {
+        "elapsed_seconds", "optimizer_updates", "train_iteration_seconds", "val_seconds",
+    }} for record in records]
+    assert stripped == [
         {"step": 0, "val_accuracy": 0.125},
         {"step": 1, "train_loss": 0.5, "train_mean_reward": 0.25},
         {"step": 2, "train_loss": 0.5, "train_mean_reward": 0.25, "val_accuracy": 0.25},

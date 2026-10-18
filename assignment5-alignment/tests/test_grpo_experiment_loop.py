@@ -46,17 +46,24 @@ def test_loop_schedules_validation_and_yields_detached_scalars(
     ))
 
     assert [step for step, _ in results] == list(range(num_steps + 1))
-    assert results[0] == (0, {"val_accuracy": 0.25})
+    assert results[0][1]["val_accuracy"] == 0.25
+    assert results[0][1]["optimizer_updates"] == 0
+    assert results[0][1]["elapsed_seconds"] >= results[0][1]["val_seconds"] >= 0
     assert [step for event, step in events if event == "val"] == validation_steps
     expected_events = [("val", 0)]
     for step in range(1, num_steps + 1):
         expected_events.append(("train", step))
         if step in validation_steps:
             expected_events.append(("val", step))
-        expected = {"train_loss": float(step), "train_mean_reward": 0.5}
+        expected = {"train_loss": float(step), "train_mean_reward": 0.5, "optimizer_updates": step}
         if step in validation_steps:
             expected["val_accuracy"] = 0.25
-        assert results[step] == (step, expected)
+        actual = dict(results[step][1])
+        assert actual.pop("elapsed_seconds") >= results[step - 1][1]["elapsed_seconds"]
+        assert actual.pop("train_iteration_seconds") >= 0
+        if step in validation_steps:
+            assert actual.pop("val_seconds") >= 0
+        assert actual == expected
         assert all(isinstance(value, (int, float)) for value in results[step][1].values())
     assert events == expected_events
     assert all(rng is rngs[0] for rng in rngs)
@@ -73,7 +80,7 @@ def test_loop_waits_for_the_caller_before_starting_the_next_update(monkeypatch):
     loop = run_grpo_training_loop(config, *[Mock() for _ in range(6)])
     validate.assert_not_called()
     train.assert_not_called()
-    assert next(loop) == (0, {"val_accuracy": 0.0})
+    assert next(loop)[1]["val_accuracy"] == 0.0
     train.assert_not_called()
     assert next(loop)[0] == 1
     assert train.call_count == 1
@@ -167,3 +174,31 @@ def test_loop_connects_real_cpu_updates_to_validation(tiny_train_model, tokenize
     assert all(torch.equal(a, b) for a, b in zip(snapshots[2], snapshots[3], strict=True))
     assert any(not torch.equal(a, b) for a, b in zip(snapshots[3], snapshots[4], strict=True))
     assert all(p.grad is None for p in policy.parameters())
+
+
+def test_loop_times_work_not_consumer_wait_and_counts_all_updates(monkeypatch):
+    config = GRPOExperimentConfig(
+        num_rollout_steps=1, rollout_batch_size=256, train_batch_size=8,
+        gradient_accumulation_steps=1,
+    )
+    clock = Mock(side_effect=[0.0, 1.0, 2.0, 100.0, 105.0, 106.0, 109.0, 111.0])
+    monkeypatch.setattr(grpo_experiment.time, "perf_counter", clock)
+    monkeypatch.setattr(grpo_experiment, "evaluate_grpo_policy", Mock(return_value=({"val_accuracy": 0.0}, [])))
+    monkeypatch.setattr(grpo_experiment, "run_grpo_iteration", Mock(return_value=({"loss": 0.1}, [], [])))
+    results = list(run_grpo_training_loop(config, *[Mock() for _ in range(6)]))
+    assert results[0][1]["elapsed_seconds"] == 2.0
+    assert results[1][1]["train_iteration_seconds"] == 5.0
+    assert results[1][1]["val_seconds"] == 3.0
+    assert results[1][1]["elapsed_seconds"] == 13.0
+    assert results[1][1]["optimizer_updates"] == 32
+
+
+def test_timing_synchronizes_only_the_training_cuda_device(monkeypatch, tiny_train_model):
+    from types import SimpleNamespace
+    synchronize = Mock()
+    monkeypatch.setattr(torch.cuda, "synchronize", synchronize)
+    grpo_experiment._synchronize_policy(tiny_train_model)
+    synchronize.assert_not_called()
+    monkeypatch.setattr(tiny_train_model, "parameters", lambda: iter([SimpleNamespace(device=torch.device("cuda:1"))]))
+    grpo_experiment._synchronize_policy(tiny_train_model)
+    synchronize.assert_called_once_with(torch.device("cuda:1"))
