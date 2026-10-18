@@ -26,6 +26,36 @@ def get_response_log_probs(
     return result
 
 
+@torch.no_grad()
+def get_old_log_probs( # 旧模型的评分
+    model: torch.nn.Module,
+    input_ids: torch.Tensor,
+    labels: torch.Tensor,
+    microbatch_size: int,
+) -> torch.Tensor:
+    """Cache CPU token scores before updating the policy that generated a rollout batch."""
+    if input_ids.ndim != 2 or input_ids.shape != labels.shape or input_ids.shape[0] == 0:
+        raise ValueError("input_ids and labels must share a non-empty (batch_size, sequence_length) shape.")
+    if microbatch_size <= 0:
+        raise ValueError("microbatch_size must be positive.")
+
+    device = next(model.parameters()).device
+    was_training = model.training
+    log_prob_chunks = []
+    try:
+        model.eval()
+        for start in range(0, input_ids.shape[0], microbatch_size):
+            scores = get_response_log_probs(
+                model,
+                input_ids[start:start + microbatch_size].to(device),
+                labels[start:start + microbatch_size].to(device),
+            )
+            log_prob_chunks.append(scores["log_probs"].cpu())
+    finally:
+        model.train(was_training)
+    return torch.cat(log_prob_chunks, dim=0) # 沿维度拼接
+
+
 def compute_policy_gradient_loss(
     raw_rewards_or_advantages: torch.Tensor, # （batch_size,） 回答奖励
     policy_log_probs: torch.Tensor, # (batch_size, max_length)
