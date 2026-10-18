@@ -45,11 +45,10 @@ def test_loss_backpropagates_into_a_causal_model(tiny_train_model):
     assert any(gradient.abs().sum() > 0 for gradient in gradients)
 
 
-@pytest.mark.parametrize("method", ["gspo", "unknown"])
-def test_later_reweighting_methods_are_explicitly_unsupported(method):
+def test_unknown_reweighting_is_explicitly_unsupported():
     with pytest.raises(NotImplementedError):
         compute_policy_gradient_loss(
-            torch.ones(1), torch.zeros((1, 2)), importance_reweighting_method=method
+            torch.ones(1), torch.zeros((1, 2)), importance_reweighting_method="unknown"
         )
 
 

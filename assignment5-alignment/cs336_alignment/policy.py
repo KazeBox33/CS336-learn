@@ -65,8 +65,8 @@ def compute_policy_gradient_loss(
     response_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """Return token losses; response masking and aggregation happen separately."""
-    if importance_reweighting_method not in ("none", "noclip", "grpo"):
-        raise NotImplementedError("Only none, noclip, and grpo reweighting are implemented.")
+    if importance_reweighting_method not in ("none", "noclip", "grpo", "gspo"):
+        raise NotImplementedError("Unknown importance reweighting method.")
     if policy_log_probs.ndim != 2:
         raise ValueError("policy_log_probs must have shape (batch_size, sequence_length).")
 
@@ -83,11 +83,23 @@ def compute_policy_gradient_loss(
 
     if old_log_probs is None or old_log_probs.shape != policy_log_probs.shape:
         raise ValueError("old_log_probs must have the same shape as policy_log_probs.")
-    ratio = (policy_log_probs - old_log_probs.detach()).exp()
+    log_ratio = policy_log_probs - old_log_probs.detach()
+    if importance_reweighting_method == "gspo":
+        if response_mask is None or response_mask.shape != policy_log_probs.shape:
+            raise ValueError("response_mask must match policy_log_probs for gspo reweighting.")
+        response_tokens = response_mask.bool()
+        # Average log-ratios before exponentiating; never multiply token ratios.
+        if log_ratio.dtype in (torch.float16, torch.bfloat16):
+            log_ratio = log_ratio.float() # 换成32位
+        response_lengths = response_tokens.sum(dim=-1, keepdim=True).clamp_min(1) # 回复长度
+        mean_log_ratio = log_ratio.masked_fill(~response_tokens, 0.0).sum(dim=-1, keepdim=True) / response_lengths
+        ratio = mean_log_ratio.exp().expand_as(policy_log_probs)
+    else:
+        ratio = log_ratio.exp()
     objective = weights * ratio
-    if importance_reweighting_method == "grpo":
+    if importance_reweighting_method in ("grpo", "gspo"): # grpo 和 gspo 还要裁剪一下
         if cliprange is None or not math.isfinite(cliprange) or cliprange < 0:
-            raise ValueError("cliprange must be finite and non-negative for grpo reweighting.")
+            raise ValueError("cliprange must be finite and non-negative for clipped reweighting.")
         clipped_ratio = ratio.clamp(1 - cliprange, 1 + cliprange)
         objective = torch.minimum(objective, weights * clipped_ratio)
     return -objective, {}
