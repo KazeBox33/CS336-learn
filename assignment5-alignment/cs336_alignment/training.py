@@ -145,6 +145,39 @@ def _accumulate_microbatch_gradients(
     return total_loss, {"mean_token_entropy": total_entropy / response_tokens.clamp_min(1)}
 
 
+def _update_policy_from_batch(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    token_batch: dict[str, torch.Tensor],
+    advantages: torch.Tensor,
+    gradient_accumulation_steps: int,
+    max_grad_norm: float | None,
+    importance_reweighting_method: Literal["none", "noclip", "grpo", "gspo"] = "none",
+    old_log_probs: torch.Tensor | None = None,
+    cliprange: float | None = None,
+    loss_normalization: Literal["sequence", "constant"] = "sequence",
+    normalization_constant: int | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Update once using already-tokenized responses and already-computed advantages."""
+    if max_grad_norm is not None and (not math.isfinite(max_grad_norm) or max_grad_norm < 0):
+        raise ValueError("max_grad_norm must be finite and non-negative, or None.")
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    loss, metadata = _accumulate_microbatch_gradients(
+        model, token_batch, advantages, gradient_accumulation_steps,
+        loss_normalization, normalization_constant,
+        importance_reweighting_method, old_log_probs, cliprange,
+    )
+    # An infinite limit reports the norm without clipping when clipping is disabled.
+    grad_norm = torch.nn.utils.clip_grad_norm_(
+        model.parameters(), max_grad_norm if max_grad_norm is not None else math.inf,
+        error_if_nonfinite=True,
+    )
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    return loss, {**metadata, "grad_norm": grad_norm.detach()}
+
+
 def grpo_train_step(
     model: torch.nn.Module,
     tokenizer: PreTrainedTokenizerBase,
@@ -176,22 +209,77 @@ def grpo_train_step(
         tokenizer, reward_fn, repeated_prompts, rollout_responses, repeated_ground_truths,
         group_size, advantage_eps, baseline, advantage_normalizer,
     )
-    model.train()
-    optimizer.zero_grad(set_to_none=True)
-    loss, accumulation_metadata = _accumulate_microbatch_gradients(
-        model, token_batch, advantages, gradient_accumulation_steps,
+    loss, update_metadata = _update_policy_from_batch(
+        model, optimizer, token_batch, advantages, gradient_accumulation_steps,
+        max_grad_norm, importance_reweighting_method, old_log_probs, cliprange,
         loss_normalization, normalization_constant,
-        importance_reweighting_method, old_log_probs, cliprange,
     )
-    # An infinite limit reports the norm without clipping when clipping is disabled.
-    grad_norm = torch.nn.utils.clip_grad_norm_(
-        model.parameters(), max_grad_norm if max_grad_norm is not None else math.inf,
-        error_if_nonfinite=True,
-    )
-    optimizer.step()
-    optimizer.zero_grad(set_to_none=True)
-    return loss, {
-        **metadata,
-        **accumulation_metadata,
-        "grad_norm": grad_norm.detach(),
+    return loss, {**metadata, **update_metadata}
+
+
+def train_rollout_batch(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    token_batch: dict[str, torch.Tensor],
+    advantages: torch.Tensor,
+    train_batch_size: int,
+    gradient_accumulation_steps: int,
+    max_grad_norm: float | None,
+    importance_reweighting_method: Literal["none", "noclip", "grpo", "gspo"] = "none",
+    old_log_probs: torch.Tensor | None = None,
+    cliprange: float | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor | int]]:
+    """Consume a prepared CPU rollout batch once, updating independently per minibatch.
+
+    Advantages must be computed over the original groups before splitting. Cached
+    old scores must use the same full-batch token layout and remain fixed throughout.
+    Loss and gradient norm are update means; entropy is retained-response-token weighted.
+    """
+    if advantages.ndim != 1 or advantages.numel() == 0:
+        raise ValueError("advantages must be a non-empty one-dimensional tensor.")
+    batch_size = advantages.numel()
+    if train_batch_size <= 0 or batch_size % train_batch_size != 0:
+        raise ValueError("train_batch_size must be positive and divide the rollout batch size.")
+    if not 1 <= gradient_accumulation_steps <= train_batch_size:
+        raise ValueError("gradient_accumulation_steps must be between 1 and train_batch_size.")
+    shape = token_batch["input_ids"].shape
+    if len(shape) != 2 or shape[0] != batch_size or any(
+        token_batch[key].shape != shape for key in ("labels", "response_mask")
+    ):
+        raise ValueError("Token tensors must share shape (batch_size, sequence_length).")
+    if importance_reweighting_method != "none" and (
+        old_log_probs is None or old_log_probs.shape != shape
+    ):
+        raise ValueError("old_log_probs must align with the full rollout token batch.")
+
+    advantages = advantages.detach()
+    old_log_probs = old_log_probs.detach() if old_log_probs is not None else None
+    device = next(model.parameters()).device
+    total_loss = torch.zeros((), device=device)
+    total_norm = torch.zeros_like(total_loss)
+    max_norm = torch.zeros_like(total_loss)
+    total_entropy = torch.zeros_like(total_loss)
+    total_tokens = torch.zeros_like(total_loss)
+    num_updates = batch_size // train_batch_size
+    for start in range(0, batch_size, train_batch_size):
+        stop = start + train_batch_size
+        minibatch = {key: tensor[start:stop] for key, tensor in token_batch.items()}
+        minibatch_advantages = advantages[start:stop]
+        minibatch_old = old_log_probs[start:stop] if old_log_probs is not None else None
+        loss, metadata = _update_policy_from_batch(
+            model, optimizer, minibatch, minibatch_advantages,
+            gradient_accumulation_steps, max_grad_norm,
+            importance_reweighting_method, minibatch_old, cliprange,
+        )
+        total_loss += loss / num_updates
+        total_norm += metadata["grad_norm"] / num_updates
+        max_norm = torch.maximum(max_norm, metadata["grad_norm"])
+        active_tokens = minibatch["response_mask"][minibatch_advantages != 0].bool().sum().to(device) # 有效token数
+        total_entropy += metadata["mean_token_entropy"] * active_tokens
+        total_tokens += active_tokens
+    return total_loss, {
+        "grad_norm": total_norm,
+        "grad_norm_max": max_norm,
+        "mean_token_entropy": total_entropy / total_tokens.clamp_min(1),
+        "optimizer_steps": num_updates,
     }
