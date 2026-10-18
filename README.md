@@ -1,8 +1,8 @@
 # CS336 Learn
 
-从零实现语言模型，并继续深入单 GPU 性能分析、Triton GPU Kernel 与分布式训练。
+从零实现语言模型，深入 GPU 性能优化、分布式训练与 GRPO 后训练，目前开始学习指令微调和偏好对齐。
 
-This repository records my implementation-driven study of Stanford CS336: Language Modeling from Scratch. Assignment 1 covers the complete language-modeling pipeline; Assignment 2 extends it into profiling, memory optimization, FlashAttention-2, DDP, optimizer sharding, and FSDP. The Assignment 3 scaling-law starter is also available for the next stage.
+This repository records my implementation-driven study of Stanford CS336: Language Modeling from Scratch. Assignment 1 covers the complete language-modeling pipeline; Assignment 2 extends it into profiling, memory optimization, FlashAttention-2, DDP, optimizer sharding, and FSDP. Assignment 5 adds GRPO policy gradients, on/off-policy training, and experiment tooling. The optional instruction-tuning and DPO supplement is the current learning focus; the Assignment 3 scaling-law starter remains available for later study.
 
 ![CS336 learning roadmap](docs/readme/learning-roadmap.svg)
 
@@ -17,8 +17,16 @@ This repository records my implementation-driven study of Stanford CS336: Langua
 | Assignment 2 core code | Complete | Benchmarking, FlashAttention-2, DDP, optimizer sharding, and FSDP implementations |
 | Assignment 2 experiments | Pending | GPU/NCCL measurements, Nsight traces, and experimental write-ups to be added later |
 | Assignment 3 scaling laws | Starter imported | Official handout, reference code, examples, and tests are available |
+| Assignment 5 GRPO core | Implemented and CPU-tested | Rewards/advantages, sequence/constant aggregation, on-policy variants, token-level reweighting/clipping, GSPO, and gradient accumulation |
+| Assignment 5 on/off-policy experiment tooling | Implemented and CPU-tested | Rollouts, fixed old scores, 32 updates per rollout batch, validation, checkpoints, clip fraction, timing and multi-method reports |
+| Assignment 5 GPU experiments | Pending | No real OLMo/vLLM training runs, reward curves or accuracy claims yet |
+| Assignment 5 remaining main-assignment work | Pending | Training-prompt ablation and on-policy-variant experiment configuration, custom estimator, and written analysis |
+| Assignment 5 optional SFT / DPO supplement | Learning started; implementation pending | Handout and starter tools available; separate implementation/script directories and navigation prepared |
 
 Assignment 2's core implementation work is complete for now. The remaining work is to organize the parallelism calculations and run the GPU experiments when the required hardware is available; the optional leaderboard optimization is a separate future project.
+
+当前学习位置：A5 附加作业的概览与工具说明，下一步按讲义进入 zero-shot evaluation。
+A5 主线不标记为整份作业完成：已有核心训练与实验配套代码，但真实实验、部分实验配置和最终分析仍待补充。
 
 ## Assignment 1 / Language Modeling Basics
 
@@ -90,6 +98,28 @@ Implemented code:
 
 GPU/NCCL benchmark results, Nsight screenshots, and the corresponding experimental analysis remain to be added. The optional 8B-model leaderboard run has not been completed.
 
+## Assignment 5 / Alignment and Post-Training
+
+The main assignment and optional supplement share [`assignment5-alignment/`](assignment5-alignment/), with a [file-category index](assignment5-alignment/README.md) separating their roles.
+
+Implemented main-assignment work:
+
+- Prompt construction, response tokenization/masking, response log probabilities and GSM8K prompting evaluation.
+- Rollout scoring and group advantages with mean/no baseline and std/mean/no advantage normalization.
+- Sequence-length or constant loss aggregation, zero-advantage pruning, gradient accumulation and norm clipping.
+- On-policy training and the building blocks for GRPO-constant, Dr. GRPO, RFT and MaxRL.
+- Off-policy naive/noclip/GRPO-clipped/GSPO paths, with cached old log probabilities and independent minibatch updates.
+- Training/validation metrics, response snapshots, checkpoints, timing, clip-fraction counts and multi-seed/multi-method plots.
+- A four-method experiment planner that prints commands by default and launches training only with explicit `--execute`.
+
+Latest local main-track regression: **518 tests passed** on CPU, including tiny-model training and synthetic-log plotting checks. Optional SFT/DPO tests are excluded because their adapters are not implemented yet. These tests are not evidence of GPU training quality or speed.
+
+Still pending: real GPU experiments and analysis; exposing the existing on-policy variant settings and alternate training prompts in the experiment CLI; the custom policy-gradient estimator in Section 7. Optional CISPO and constant-normalized GSPO extensions are not implemented.
+
+The [optional supplement](assignment5-alignment/cs336_alignment/supplement/README.md) covers zero-shot evaluation, SFT, safety evaluation and DPO. Its new code belongs in `cs336_alignment/supplement/` and its new entry points in `scripts/supplement/`. Currently these are package scaffolds, not completed evaluation or training implementations. Existing main-track code and official tests remain in place.
+
+Experiment guides: [prompting baselines](assignment5-alignment/PROMPTING_BASELINES.md), [standard GRPO](assignment5-alignment/GRPO_EXPERIMENT_GUIDE.md), and [off-policy comparison](assignment5-alignment/OFF_POLICY_EXPERIMENT_GUIDE.md). GPU experiments will be added when hardware is ready; no validation-accuracy target is claimed as achieved.
+
 ## Repository Layout
 
 ```text
@@ -97,6 +127,9 @@ CS336-learn/
 ├── assignment1-basics/       # Tokenizer, Transformer, training and generation
 ├── assignment2-systems/      # Profiling, kernels and distributed systems
 ├── assignment3-scaling/      # Scaling-law assignment starter and reference code
+├── assignment5-alignment/    # GRPO main assignment and optional SFT / DPO supplement
+│   ├── cs336_alignment/supplement/  # New optional-assignment implementations
+│   └── scripts/supplement/          # New optional-assignment entry points
 ├── docs/readme/              # Reproducible README data and figures
 ├── OWT_EXPERIMENTS.md        # OpenWebText experiment history
 ├── TRAINING_EXPERIMENTS.md   # Training configurations and results
@@ -118,6 +151,19 @@ Assignment 2 environment:
 cd assignment2-systems
 uv run python -c "import cs336_basics, cs336_systems"
 ```
+
+Assignment 5 main-track CPU regression:
+
+```bash
+cd assignment5-alignment
+uv run --frozen --with matplotlib pytest -q \
+  --ignore=tests/test_data.py \
+  --ignore=tests/test_dpo.py \
+  --ignore=tests/test_metrics.py \
+  --ignore-glob='tests/test_supplement_*.py'
+```
+
+The optional supplement's official tests are `test_metrics.py`, `test_data.py` and `test_dpo.py`; their interfaces are still pending implementation. See the [supplement guide](assignment5-alignment/cs336_alignment/supplement/README.md) for separate test commands and output-directory conventions.
 
 Regenerate README figures:
 

@@ -35,28 +35,28 @@
   ],
   "roadmap": [
     {
-      "name": "A1 core implementation",
+      "name": "A1 LM pipeline",
       "status": "complete"
     },
     {
-      "name": "A1 E2E baseline runs",
+      "name": "A2 systems core",
       "status": "complete"
     },
     {
-      "name": "A2 profiling",
+      "name": "A3 scaling study",
+      "status": "planned"
+    },
+    {
+      "name": "A5 GRPO core",
+      "status": "complete"
+    },
+    {
+      "name": "A5 GPU experiments",
+      "status": "planned"
+    },
+    {
+      "name": "A5 SFT / DPO study",
       "status": "in_progress"
-    },
-    {
-      "name": "A2 memory optimization",
-      "status": "planned"
-    },
-    {
-      "name": "A2 Triton FlashAttention-2",
-      "status": "planned"
-    },
-    {
-      "name": "A2 distributed training",
-      "status": "planned"
     }
   ]
 }
