@@ -84,16 +84,18 @@ def _accumulate_microbatch_gradients(
         token_batch[key].shape != shape for key in ("labels", "response_mask")
     ):
         raise ValueError("Token tensors must share shape (batch_size, sequence_length).")
-    if importance_reweighting_method not in ("none", "noclip", "grpo"):
-        raise NotImplementedError("Only none, noclip, and grpo reweighting are implemented.")
+    if importance_reweighting_method not in ("none", "noclip", "grpo", "gspo"):
+        raise NotImplementedError("Unknown importance reweighting method.")
+    if importance_reweighting_method == "gspo" and loss_normalization != "sequence":
+        raise NotImplementedError("GSPO currently supports only sequence loss normalization.")
     if importance_reweighting_method != "none" and (
         old_log_probs is None or old_log_probs.shape != shape
     ):
         raise ValueError("old_log_probs must align with the full token batch.")
-    if importance_reweighting_method == "grpo" and (
+    if importance_reweighting_method in ("grpo", "gspo") and (
         cliprange is None or not math.isfinite(cliprange) or cliprange < 0
     ):
-        raise ValueError("cliprange must be finite and non-negative for grpo reweighting.")
+        raise ValueError("cliprange must be finite and non-negative for clipped reweighting.")
 
     device = next(model.parameters()).device
     total_loss = torch.zeros((), device=device)
@@ -126,6 +128,7 @@ def _accumulate_microbatch_gradients(
             importance_reweighting_method=importance_reweighting_method,
             old_log_probs=microbatch_old_log_probs,
             cliprange=cliprange,
+            response_mask=microbatch["response_mask"], # 给gspo 准备的mask
         )
         loss = aggregate_loss_across_microbatch( # 得出这个批次的loss
             token_losses, microbatch["response_mask"], loss_normalization, normalization_constant
@@ -163,8 +166,8 @@ def grpo_train_step(
     normalization_constant: int | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor | float]]:
     """Perform one update, optionally reweighting against caller-cached sampling scores."""
-    if importance_reweighting_method not in ("none", "noclip", "grpo"):
-        raise NotImplementedError("Only none, noclip, and grpo reweighting are implemented.")
+    if importance_reweighting_method not in ("none", "noclip", "grpo", "gspo"):
+        raise NotImplementedError("Unknown importance reweighting method.")
     if not 1 <= gradient_accumulation_steps <= len(rollout_responses):
         raise ValueError("gradient_accumulation_steps must be between 1 and the rollout batch size.")
     if max_grad_norm is not None and (not math.isfinite(max_grad_norm) or max_grad_norm < 0):

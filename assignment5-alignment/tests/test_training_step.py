@@ -77,7 +77,10 @@ def test_update_matches_full_batch_and_logs_pre_update_statistics(
     [
         ({"baseline": "invalid"}, ValueError),
         ({"advantage_normalizer": "invalid"}, NotImplementedError),
-        ({"importance_reweighting_method": "gspo"}, NotImplementedError),
+        ({"importance_reweighting_method": "unknown"}, NotImplementedError),
+        ({"importance_reweighting_method": "gspo"}, ValueError),
+        ({"importance_reweighting_method": "gspo", "loss_normalization": "constant",
+          "normalization_constant": 32}, NotImplementedError),
         ({"importance_reweighting_method": "grpo"}, ValueError),
         ({"loss_normalization": "constant"}, ValueError),
         ({"loss_normalization": "invalid"}, NotImplementedError),

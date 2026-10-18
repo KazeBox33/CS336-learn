@@ -28,9 +28,11 @@ def rollout_inputs():
     }
 
 
-@pytest.mark.parametrize("method", ["noclip", "grpo"])
+@pytest.mark.parametrize("method, normalization", [
+    ("noclip", "sequence"), ("grpo", "sequence"), ("gspo", "sequence"),
+    ("noclip", "constant"), ("grpo", "constant"),
+])
 @pytest.mark.parametrize("steps", [1, 3, 5])
-@pytest.mark.parametrize("normalization", ["sequence", "constant"])
 def test_off_policy_update_matches_full_batch_with_pruning(
     tiny_train_model, tokenizer, rollout_inputs, method, steps, normalization
 ):
@@ -41,7 +43,7 @@ def test_off_policy_update_matches_full_batch_with_pruning(
     old_scores = (scores["log_probs"].detach() - ratios.log()).requires_grad_()
     saved_old_scores = old_scores.detach().clone()
     token_losses, _ = compute_policy_gradient_loss(
-        advantages, scores["log_probs"], method, old_scores, 0.2
+        advantages, scores["log_probs"], method, old_scores, 0.2, batch["response_mask"]
     )
     expected_loss = aggregate_loss_across_microbatch(token_losses, batch["response_mask"], normalization, 37)
     expected_loss.backward()
@@ -66,7 +68,7 @@ def test_off_policy_update_matches_full_batch_with_pruning(
         assert actual.grad is None
 
 
-@pytest.mark.parametrize("method", ["noclip", "grpo"])
+@pytest.mark.parametrize("method", ["noclip", "grpo", "gspo"])
 def test_cached_sampling_scores_can_be_reused_for_two_updates(
     tiny_train_model, tokenizer, rollout_inputs, method
 ):
@@ -92,6 +94,11 @@ def test_cached_sampling_scores_can_be_reused_for_two_updates(
         ("grpo", torch.zeros((5, 1)), None),
         ("grpo", torch.zeros((5, 1)), -0.1),
         ("grpo", torch.zeros((5, 1)), float("nan")),
+        ("gspo", None, 0.2),
+        ("gspo", torch.zeros((5, 2)), 0.2),
+        ("gspo", torch.zeros((5, 1)), None),
+        ("gspo", torch.zeros((5, 1)), -0.1),
+        ("gspo", torch.zeros((5, 1)), float("nan")),
     ],
 )
 def test_invalid_off_policy_inputs_fail_even_when_all_advantages_are_zero(
