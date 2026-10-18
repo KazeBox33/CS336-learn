@@ -16,6 +16,7 @@ def test_defaults_match_the_standard_experiment():
     assert config.n_val_examples == 1024
     assert config.num_rollout_steps == 200
     assert config.rollout_batch_size == config.train_batch_size == 256
+    assert config.optimizer_steps_per_rollout == 1
     assert config.prompts_per_rollout_batch == 32
     assert config.gradient_accumulation_steps == 32
     assert config.learning_rate == 1e-5
@@ -65,6 +66,10 @@ def test_configuration_cannot_be_mutated_after_creation():
         {"importance_reweighting_method": "grpo", "cliprange": -0.1},
         {"importance_reweighting_method": "grpo", "cliprange": float("nan")},
         {"importance_reweighting_method": "grpo", "cliprange": float("inf")},
+        {"train_batch_size": 0}, {"train_batch_size": -1},
+        {"train_batch_size": 7}, {"train_batch_size": 512},
+        {"train_batch_size": 8, "gradient_accumulation_steps": 9},
+        {"importance_reweighting_method": "gspo", "cliprange": float("nan")},
     ],
 )
 def test_rejects_invalid_experiment_settings(kwargs):
@@ -72,8 +77,18 @@ def test_rejects_invalid_experiment_settings(kwargs):
         GRPOExperimentConfig(**kwargs)
 
 
-@pytest.mark.parametrize("method, cliprange", [("noclip", None), ("grpo", 0.2), ("grpo", 0.0)])
+@pytest.mark.parametrize("method, cliprange", [("noclip", None), ("grpo", 0.2), ("grpo", 0.0), ("gspo", 3e-4)])
 def test_configuration_accepts_token_reweighting(method, cliprange):
     config = GRPOExperimentConfig(importance_reweighting_method=method, cliprange=cliprange)
     assert config.importance_reweighting_method == method
     assert config.cliprange == cliprange
+
+
+def test_handout_off_policy_sizes_and_groups_are_independent():
+    config = GRPOExperimentConfig(train_batch_size=8, gradient_accumulation_steps=1)
+    assert config.rollout_batch_size == 256
+    assert config.optimizer_steps_per_rollout == 32
+    split_groups = GRPOExperimentConfig(
+        rollout_batch_size=6, group_size=3, train_batch_size=2, gradient_accumulation_steps=1
+    )
+    assert split_groups.optimizer_steps_per_rollout == 3

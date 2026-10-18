@@ -75,6 +75,20 @@ def test_dry_run_records_reweighting_settings(cli, small_args, tmp_path, capsys,
     assert not (tmp_path / "run").exists()
 
 
+def test_off_policy_dry_run_exposes_32_updates_and_gspo(cli, tmp_path, capsys):
+    cli.main([
+        "--output-dir", str(tmp_path / "run"), "--n-train-examples", "2", "--n-val-examples", "1",
+        "--rollout-batch-size", "256", "--train-batch-size", "8", "--gradient-accumulation-steps", "1",
+        "--importance-reweighting-method", "gspo", "--cliprange", "3e-4", "--dry-run",
+    ])
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["config"]["train_batch_size"] == 8
+    assert preview["config"]["importance_reweighting_method"] == "gspo"
+    assert preview["config"]["cliprange"] == 3e-4
+    assert preview["optimizer_steps_per_rollout"] == 32
+    assert not (tmp_path / "run").exists()
+
+
 @pytest.mark.parametrize("extra_args", [
     ["--rollout-batch-size", "3"],
     ["--validation-batch-size", "0"],
@@ -85,6 +99,8 @@ def test_dry_run_records_reweighting_settings(cli, small_args, tmp_path, capsys,
     ["--importance-reweighting-method", "grpo"],
     ["--importance-reweighting-method", "grpo", "--cliprange", "nan"],
     ["--importance-reweighting-method", "gspo"],
+    ["--train-batch-size", "3"],
+    ["--train-batch-size", "1"],
 ])
 def test_invalid_arguments_fail_before_loading_data(cli, small_args, extra_args, monkeypatch):
     load = Mock()

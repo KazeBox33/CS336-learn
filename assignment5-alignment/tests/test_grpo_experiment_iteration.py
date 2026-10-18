@@ -72,7 +72,7 @@ def test_iteration_connects_generation_to_exactly_one_training_step(monkeypatch,
     cache.assert_not_called()
 
 
-@pytest.mark.parametrize("method", ["noclip", "grpo"])
+@pytest.mark.parametrize("method", ["noclip", "grpo", "gspo"])
 def test_iteration_caches_old_scores_after_generation_before_training(
     monkeypatch, config, data, tokenizer, method
 ):
@@ -154,7 +154,7 @@ def test_training_failure_is_not_swallowed(monkeypatch, config, data):
     train.assert_called_once()
 
 
-@pytest.mark.parametrize("method", ["none", "noclip", "grpo"])
+@pytest.mark.parametrize("method", ["none", "noclip", "grpo", "gspo"])
 def test_two_iterations_use_updated_weights_and_real_cpu_training(
     config, data, tiny_train_model, tokenizer, method
 ):

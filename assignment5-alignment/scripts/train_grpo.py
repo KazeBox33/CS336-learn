@@ -1,4 +1,4 @@
-"""Run standard on-policy GRPO on GSM8K, or check the configuration without GPUs."""
+"""Run on/off-policy GRPO on GSM8K, or check the configuration without GPUs."""
 
 import argparse
 import json
@@ -34,7 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=getattr(defaults, name))
     for name in ("learning_rate", "sampling_temperature", "max_grad_norm"):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=getattr(defaults, name))
-    parser.add_argument("--importance-reweighting-method", choices=["none", "noclip", "grpo"],
+    parser.add_argument("--train-batch-size", type=int, default=None,
+                        help="Responses per optimizer step; defaults to rollout batch size")
+    parser.add_argument("--importance-reweighting-method", choices=["none", "noclip", "grpo", "gspo"],
                         default=defaults.importance_reweighting_method)
     parser.add_argument("--cliprange", type=float, default=defaults.cliprange)
     parser.add_argument("--output-dir", type=Path, required=True, help="A new result directory")
@@ -75,6 +77,7 @@ def main(argv: list[str] | None = None) -> None:
         "n_loaded_train_examples": len(data.train_examples),
         "n_loaded_val_examples": len(data.val_examples),
         "prompts_per_rollout_batch": config.prompts_per_rollout_batch,
+        "optimizer_steps_per_rollout": config.optimizer_steps_per_rollout,
         "completed": False,
     }
     if args.dry_run:

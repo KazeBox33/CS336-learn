@@ -15,7 +15,7 @@ from cs336_alignment.gsm8k import GSM8KExample, load_gsm8k
 from cs336_alignment.policy import get_old_log_probs
 from cs336_alignment.prompting import build_prompts, build_sampling_params
 from cs336_alignment.tokenization import tokenize_prompt_and_output
-from cs336_alignment.training import grpo_train_step
+from cs336_alignment.training import _prepare_rollout_batch, grpo_train_step, train_rollout_batch
 from cs336_alignment.vllm_utils import VLLMCompletion, VLLMServer
 
 
@@ -43,8 +43,9 @@ class GRPOExperimentConfig:
     max_grad_norm: float | None = 1.0
     eval_interval: int = 10
     rollout_log_interval: int = 40
-    importance_reweighting_method: Literal["none", "noclip", "grpo"] = "none"
+    importance_reweighting_method: Literal["none", "noclip", "grpo", "gspo"] = "none"
     cliprange: float | None = None
+    train_batch_size: int | None = None
 
     def __post_init__(self) -> None: # 在生成前会自动调用他
         for name in (
@@ -56,8 +57,12 @@ class GRPOExperimentConfig:
                 raise ValueError(f"{name} must be positive.")
         if self.rollout_batch_size % self.group_size != 0:
             raise ValueError("rollout_batch_size must be divisible by group_size.")
-        if self.gradient_accumulation_steps > self.rollout_batch_size:
-            raise ValueError("gradient_accumulation_steps cannot exceed the response batch size.")
+        if self.train_batch_size is None:
+            object.__setattr__(self, "train_batch_size", self.rollout_batch_size)
+        if self.train_batch_size <= 0 or self.rollout_batch_size % self.train_batch_size != 0:
+            raise ValueError("train_batch_size must be positive and divide rollout_batch_size.")
+        if self.gradient_accumulation_steps > self.train_batch_size:
+            raise ValueError("gradient_accumulation_steps cannot exceed train_batch_size.")
         if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:
             raise ValueError("learning_rate must be finite and positive.")
         if not math.isfinite(self.sampling_temperature) or self.sampling_temperature < 0:
@@ -66,12 +71,12 @@ class GRPOExperimentConfig:
             not math.isfinite(self.max_grad_norm) or self.max_grad_norm < 0
         ):
             raise ValueError("max_grad_norm must be finite and non-negative, or None.")
-        if self.importance_reweighting_method not in ("none", "noclip", "grpo"):
-            raise ValueError("importance_reweighting_method must be none, noclip, or grpo.")
-        if self.importance_reweighting_method == "grpo" and (
+        if self.importance_reweighting_method not in ("none", "noclip", "grpo", "gspo"):
+            raise ValueError("importance_reweighting_method must be none, noclip, grpo, or gspo.")
+        if self.importance_reweighting_method in ("grpo", "gspo") and (
             self.cliprange is None or not math.isfinite(self.cliprange) or self.cliprange < 0
         ):
-            raise ValueError("cliprange must be finite and non-negative for grpo reweighting.")
+            raise ValueError("cliprange must be finite and non-negative for clipped reweighting.")
         if not self.model_id.strip():
             raise ValueError("model_id must not be empty.")
         if self.prompt_name != "r1_zero":
@@ -82,8 +87,8 @@ class GRPOExperimentConfig:
         return self.rollout_batch_size // self.group_size
 
     @property
-    def train_batch_size(self) -> int:
-        return self.rollout_batch_size
+    def optimizer_steps_per_rollout(self) -> int:
+        return self.rollout_batch_size // self.train_batch_size
 
 
 @dataclass(frozen=True)
@@ -220,34 +225,52 @@ def run_grpo_iteration(
     *,
     rng: random.Random,
 ) -> tuple[dict[str, torch.Tensor | float], list[str], list[VLLMCompletion]]:
-    """Generate a fresh batch, optionally cache sampling scores, then update once."""
+    """Generate once, cache fixed rollout data, and update once per training batch."""
     repeated_prompts, completions, repeated_ground_truths = generate_training_rollouts( # vllm 那个gpu生成回答
         config, data, server, policy, rng=rng
     )
     rollout_responses = [completion.text for completion in completions]
+    multiple_updates = config.optimizer_steps_per_rollout > 1
+    if multiple_updates: # 梯度多次更新
+        token_batch, advantages, reward_metadata = _prepare_rollout_batch(
+            tokenizer, reward_fn, repeated_prompts, rollout_responses,
+            repeated_ground_truths, config.group_size,
+        )
     old_log_probs = None
     if config.importance_reweighting_method != "none":
-        token_batch = tokenize_prompt_and_output(repeated_prompts, rollout_responses, tokenizer)
+        if not multiple_updates:
+            token_batch = tokenize_prompt_and_output(repeated_prompts, rollout_responses, tokenizer)
         # The policy still has the weights just synchronized to the rollout server.
         old_log_probs = get_old_log_probs(
             policy, token_batch["input_ids"], token_batch["labels"],
-            microbatch_size=math.ceil(len(rollout_responses) / config.gradient_accumulation_steps),
+            microbatch_size=math.ceil(config.train_batch_size / config.gradient_accumulation_steps),
         )
-    loss, metadata = grpo_train_step(
-        model=policy,
-        tokenizer=tokenizer,
-        optimizer=optimizer,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        max_grad_norm=config.max_grad_norm,
-        reward_fn=reward_fn,
-        repeated_prompts=repeated_prompts,
-        rollout_responses=rollout_responses,
-        repeated_ground_truths=repeated_ground_truths,
-        group_size=config.group_size,
-        importance_reweighting_method=config.importance_reweighting_method,
-        old_log_probs=old_log_probs,
-        cliprange=config.cliprange,
-    )
+    if multiple_updates:
+        loss, update_metadata = train_rollout_batch(
+            model=policy, optimizer=optimizer, token_batch=token_batch, advantages=advantages,
+            train_batch_size=config.train_batch_size,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            max_grad_norm=config.max_grad_norm,
+            importance_reweighting_method=config.importance_reweighting_method,
+            old_log_probs=old_log_probs, cliprange=config.cliprange,
+        )
+        metadata = {**reward_metadata, **update_metadata}
+    else:
+        loss, metadata = grpo_train_step(
+            model=policy,
+            tokenizer=tokenizer,
+            optimizer=optimizer,
+            gradient_accumulation_steps=config.gradient_accumulation_steps,
+            max_grad_norm=config.max_grad_norm,
+            reward_fn=reward_fn,
+            repeated_prompts=repeated_prompts,
+            rollout_responses=rollout_responses,
+            repeated_ground_truths=repeated_ground_truths,
+            group_size=config.group_size,
+            importance_reweighting_method=config.importance_reweighting_method,
+            old_log_probs=old_log_probs,
+            cliprange=config.cliprange,
+        )
     return {"loss": loss, **metadata}, repeated_prompts, completions
 
 
@@ -311,7 +334,7 @@ def run_grpo_training_loop( # grpo 外层循环
     rollout_output_dir: str | Path | None = None,
     on_step: Callable[[int, random.Random], None] | None = None,
 ) -> Iterator[tuple[int, dict[str, int | float]]]:
-    """Yield scalar metrics before training and after each on-policy update."""
+    """Yield metrics per rollout batch; validation and checkpoint intervals use this counter."""
     rng = random.Random(config.seed)
     val_metrics, val_completions = evaluate_grpo_policy(
         config, data, server, policy, reward_fn, batch_size=validation_batch_size
@@ -327,7 +350,10 @@ def run_grpo_training_loop( # grpo 外层循环
         if rollout_output_dir is not None and (
             step == 1 or step % config.rollout_log_interval == 0 or step == config.num_rollout_steps
         ):
-            write_grpo_rollouts(step, "train", train_prompts, train_completions, rollout_output_dir)
+            write_grpo_rollouts(
+                step, "train", train_prompts, train_completions, rollout_output_dir,
+                optimizer_steps_per_rollout=config.optimizer_steps_per_rollout,
+            )
         # Detach and copy scalar metrics off the GPU before passing them to a logger.
         metrics = {
             f"train_{name}": float(value.detach().cpu().item())
@@ -339,7 +365,10 @@ def run_grpo_training_loop( # grpo 外层循环
                 config, data, server, policy, reward_fn, batch_size=validation_batch_size
             )
             if rollout_output_dir is not None:
-                write_grpo_rollouts(step, "val", data.val_prompts, val_completions, rollout_output_dir)
+                write_grpo_rollouts(
+                    step, "val", data.val_prompts, val_completions, rollout_output_dir,
+                    optimizer_steps_per_rollout=config.optimizer_steps_per_rollout,
+                )
             metrics.update(val_metrics)
         if on_step is not None:
             on_step(step, rng)
@@ -372,6 +401,8 @@ def write_grpo_rollouts( # 具体的回答
     prompts: list[str],
     completions: list[VLLMCompletion],
     output_dir: str | Path,
+    *,
+    optimizer_steps_per_rollout: int = 1,
 ) -> Path:
     """Save an aligned batch of generated responses for qualitative inspection."""
     if split not in ("train", "val"):
@@ -380,11 +411,13 @@ def write_grpo_rollouts( # 具体的回答
         raise ValueError("Rollout step must be non-negative; training steps start at 1.")
     if not prompts or len(prompts) != len(completions):
         raise ValueError("Rollout prompts and completions must be non-empty and aligned.")
+    if optimizer_steps_per_rollout <= 0:
+        raise ValueError("optimizer_steps_per_rollout must be positive.")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{split}_step_{step:04d}.jsonl"
     # Training rollouts precede the update; validation uses the updated policy.
-    policy_step = step - 1 if split == "train" else step
+    policy_step = (step - (split == "train")) * optimizer_steps_per_rollout
     with output_path.open("x", encoding="utf-8") as file:
         for index, (prompt, completion) in enumerate(zip(prompts, completions, strict=True)):
             record = {
