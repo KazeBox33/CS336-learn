@@ -24,6 +24,8 @@ def test_defaults_match_the_standard_experiment():
     assert config.max_grad_norm == 1.0
     assert config.eval_interval == 10
     assert config.rollout_log_interval == 40
+    assert config.importance_reweighting_method == "none"
+    assert config.cliprange is None
 
 
 def test_small_configuration_does_not_load_files_or_a_model(tmp_path):
@@ -58,8 +60,20 @@ def test_configuration_cannot_be_mutated_after_creation():
         {"sampling_temperature": -1.0}, {"sampling_temperature": float("inf")},
         {"max_grad_norm": -1.0}, {"max_grad_norm": float("nan")},
         {"model_id": " "}, {"prompt_name": "r1_zero_three_shot"},
+        {"importance_reweighting_method": "gspo"},
+        {"importance_reweighting_method": "grpo"},
+        {"importance_reweighting_method": "grpo", "cliprange": -0.1},
+        {"importance_reweighting_method": "grpo", "cliprange": float("nan")},
+        {"importance_reweighting_method": "grpo", "cliprange": float("inf")},
     ],
 )
 def test_rejects_invalid_experiment_settings(kwargs):
     with pytest.raises(ValueError):
         GRPOExperimentConfig(**kwargs)
+
+
+@pytest.mark.parametrize("method, cliprange", [("noclip", None), ("grpo", 0.2), ("grpo", 0.0)])
+def test_configuration_accepts_token_reweighting(method, cliprange):
+    config = GRPOExperimentConfig(importance_reweighting_method=method, cliprange=cliprange)
+    assert config.importance_reweighting_method == method
+    assert config.cliprange == cliprange

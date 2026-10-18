@@ -1,4 +1,5 @@
 import random
+from dataclasses import replace
 from unittest.mock import Mock
 
 import pytest
@@ -11,6 +12,7 @@ from cs336_alignment.grpo_experiment import (
     run_grpo_iteration,
 )
 from cs336_alignment.gsm8k import GSM8KExample
+from cs336_alignment.tokenization import tokenize_prompt_and_output
 from cs336_alignment.vllm_utils import VLLMCompletion, VLLMServer
 
 
@@ -47,6 +49,8 @@ def test_iteration_connects_generation_to_exactly_one_training_step(monkeypatch,
     train = Mock(return_value=(loss, metadata))
     monkeypatch.setattr(grpo_experiment, "generate_training_rollouts", generate)
     monkeypatch.setattr(grpo_experiment, "grpo_train_step", train)
+    cache = Mock(side_effect=AssertionError("Standard on-policy iterations must not cache old scores."))
+    monkeypatch.setattr(grpo_experiment, "get_old_log_probs", cache)
 
     metrics, returned_prompts, returned_completions = run_grpo_iteration(
         config, data, server, policy, tokenizer, optimizer, reward_fn, rng=rng
@@ -59,11 +63,67 @@ def test_iteration_connects_generation_to_exactly_one_training_step(monkeypatch,
         repeated_prompts=prompts,
         rollout_responses=[completion.text for completion in completions],
         repeated_ground_truths=truths, group_size=2,
+        importance_reweighting_method="none", old_log_probs=None, cliprange=None,
     )
     assert metrics == {"loss": loss, **metadata}
     assert "loss" not in metadata
     assert returned_prompts is prompts
     assert returned_completions is completions
+    cache.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["noclip", "grpo"])
+def test_iteration_caches_old_scores_after_generation_before_training(
+    monkeypatch, config, data, tokenizer, method
+):
+    config = replace(config, importance_reweighting_method=method, cliprange=0.2)
+    prompts = ["Hello", "Hello", "This is", "This is"]
+    completions = [VLLMCompletion(text, [], "stop") for text in
+                   ["world", "test", "a test", "another test"]]
+    events = []
+    policy, optimizer, reward_fn = Mock(), Mock(), Mock()
+    expected_batch = tokenize_prompt_and_output(prompts, [item.text for item in completions], tokenizer)
+    old_scores = torch.zeros_like(expected_batch["labels"], dtype=torch.float32)
+
+    def generate(*args, **kwargs):
+        events.append("generate")
+        return prompts, completions, ["0", "0", "1", "1"]
+
+    def cache(model, input_ids, labels, microbatch_size):
+        assert events == ["generate"]
+        assert model is policy
+        assert microbatch_size == 2
+        torch.testing.assert_close(input_ids, expected_batch["input_ids"])
+        torch.testing.assert_close(labels, expected_batch["labels"])
+        events.append("cache")
+        return old_scores
+
+    def train(**kwargs):
+        assert events == ["generate", "cache"]
+        assert kwargs["old_log_probs"] is old_scores
+        assert kwargs["importance_reweighting_method"] == method
+        assert kwargs["cliprange"] == 0.2
+        events.append("train")
+        return torch.tensor(0.0), {}
+
+    monkeypatch.setattr(grpo_experiment, "generate_training_rollouts", generate)
+    monkeypatch.setattr(grpo_experiment, "get_old_log_probs", cache)
+    monkeypatch.setattr(grpo_experiment, "grpo_train_step", train)
+    run_grpo_iteration(config, data, Mock(), policy, tokenizer, optimizer, reward_fn, rng=random.Random(0))
+    assert events == ["generate", "cache", "train"]
+
+
+def test_old_score_failure_prevents_training(monkeypatch, config, data, tokenizer):
+    config = replace(config, importance_reweighting_method="noclip")
+    generate = Mock(return_value=(["Hello"] * 4, [VLLMCompletion("world", [], "stop")] * 4, ["0"] * 4))
+    cache = Mock(side_effect=RuntimeError("old scoring failed"))
+    train = Mock()
+    monkeypatch.setattr(grpo_experiment, "generate_training_rollouts", generate)
+    monkeypatch.setattr(grpo_experiment, "get_old_log_probs", cache)
+    monkeypatch.setattr(grpo_experiment, "grpo_train_step", train)
+    with pytest.raises(RuntimeError, match="old scoring failed"):
+        run_grpo_iteration(config, data, Mock(), Mock(), tokenizer, Mock(), Mock(), rng=random.Random(0))
+    train.assert_not_called()
 
 
 def test_generation_failure_prevents_training(monkeypatch, config, data):
@@ -94,9 +154,11 @@ def test_training_failure_is_not_swallowed(monkeypatch, config, data):
     train.assert_called_once()
 
 
+@pytest.mark.parametrize("method", ["none", "noclip", "grpo"])
 def test_two_iterations_use_updated_weights_and_real_cpu_training(
-    config, data, tiny_train_model, tokenizer
+    config, data, tiny_train_model, tokenizer, method
 ):
+    config = replace(config, importance_reweighting_method=method, cliprange=0.2)
     policy = tiny_train_model
     optimizer = torch.optim.AdamW(policy.parameters(), lr=0.01, weight_decay=0.0)
     optimizer.step = Mock(wraps=optimizer.step)

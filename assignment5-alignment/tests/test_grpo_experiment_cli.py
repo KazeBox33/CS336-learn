@@ -66,6 +66,15 @@ def test_dry_run_loads_real_data_without_gpu_checks_or_output_files(cli, small_a
     assert not (tmp_path / "run").exists()
 
 
+@pytest.mark.parametrize("method", ["noclip", "grpo"])
+def test_dry_run_records_reweighting_settings(cli, small_args, tmp_path, capsys, method):
+    cli.main([*small_args, "--importance-reweighting-method", method, "--cliprange", "0.2", "--dry-run"])
+    preview = json.loads(capsys.readouterr().out)
+    assert preview["config"]["importance_reweighting_method"] == method
+    assert preview["config"]["cliprange"] == 0.2
+    assert not (tmp_path / "run").exists()
+
+
 @pytest.mark.parametrize("extra_args", [
     ["--rollout-batch-size", "3"],
     ["--validation-batch-size", "0"],
@@ -73,6 +82,9 @@ def test_dry_run_loads_real_data_without_gpu_checks_or_output_files(cli, small_a
     ["--inference-gpu", "-1"],
     ["--learning-rate", "nan"],
     ["--checkpoint-interval", "0"],
+    ["--importance-reweighting-method", "grpo"],
+    ["--importance-reweighting-method", "grpo", "--cliprange", "nan"],
+    ["--importance-reweighting-method", "gspo"],
 ])
 def test_invalid_arguments_fail_before_loading_data(cli, small_args, extra_args, monkeypatch):
     load = Mock()

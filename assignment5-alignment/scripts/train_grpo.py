@@ -34,6 +34,9 @@ def build_parser() -> argparse.ArgumentParser:
         parser.add_argument("--" + name.replace("_", "-"), type=int, default=getattr(defaults, name))
     for name in ("learning_rate", "sampling_temperature", "max_grad_norm"):
         parser.add_argument("--" + name.replace("_", "-"), type=float, default=getattr(defaults, name))
+    parser.add_argument("--importance-reweighting-method", choices=["none", "noclip", "grpo"],
+                        default=defaults.importance_reweighting_method)
+    parser.add_argument("--cliprange", type=float, default=defaults.cliprange)
     parser.add_argument("--output-dir", type=Path, required=True, help="A new result directory")
     parser.add_argument("--training-gpu", type=int, default=0)
     parser.add_argument("--inference-gpu", type=int, default=1)

@@ -5,13 +5,16 @@ from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizerBase, set_seed
 
 from cs336_alignment.checkpoint import get_model_and_tokenizer
 from cs336_alignment.gsm8k import GSM8KExample, load_gsm8k
+from cs336_alignment.policy import get_old_log_probs
 from cs336_alignment.prompting import build_prompts, build_sampling_params
+from cs336_alignment.tokenization import tokenize_prompt_and_output
 from cs336_alignment.training import grpo_train_step
 from cs336_alignment.vllm_utils import VLLMCompletion, VLLMServer
 
@@ -21,7 +24,7 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "gsm8k"
 
 @dataclass(frozen=True)
 class GRPOExperimentConfig:
-    """Standard on-policy experiment settings, without loading models or data."""
+    """Experiment settings with standard on-policy defaults, without loading data."""
 
     model_id: str = "allenai/OLMo-2-0425-1B"
     train_path: Path = DATA_DIR / "train.jsonl"
@@ -40,6 +43,8 @@ class GRPOExperimentConfig:
     max_grad_norm: float | None = 1.0
     eval_interval: int = 10
     rollout_log_interval: int = 40
+    importance_reweighting_method: Literal["none", "noclip", "grpo"] = "none"
+    cliprange: float | None = None
 
     def __post_init__(self) -> None: # 在生成前会自动调用他
         for name in (
@@ -61,6 +66,12 @@ class GRPOExperimentConfig:
             not math.isfinite(self.max_grad_norm) or self.max_grad_norm < 0
         ):
             raise ValueError("max_grad_norm must be finite and non-negative, or None.")
+        if self.importance_reweighting_method not in ("none", "noclip", "grpo"):
+            raise ValueError("importance_reweighting_method must be none, noclip, or grpo.")
+        if self.importance_reweighting_method == "grpo" and (
+            self.cliprange is None or not math.isfinite(self.cliprange) or self.cliprange < 0
+        ):
+            raise ValueError("cliprange must be finite and non-negative for grpo reweighting.")
         if not self.model_id.strip():
             raise ValueError("model_id must not be empty.")
         if self.prompt_name != "r1_zero":
@@ -209,11 +220,19 @@ def run_grpo_iteration(
     *,
     rng: random.Random,
 ) -> tuple[dict[str, torch.Tensor | float], list[str], list[VLLMCompletion]]:
-    """Generate a fresh on-policy batch, update once, and retain samples for logging."""
+    """Generate a fresh batch, optionally cache sampling scores, then update once."""
     repeated_prompts, completions, repeated_ground_truths = generate_training_rollouts( # vllm 那个gpu生成回答
         config, data, server, policy, rng=rng
     )
     rollout_responses = [completion.text for completion in completions]
+    old_log_probs = None
+    if config.importance_reweighting_method != "none":
+        token_batch = tokenize_prompt_and_output(repeated_prompts, rollout_responses, tokenizer)
+        # The policy still has the weights just synchronized to the rollout server.
+        old_log_probs = get_old_log_probs(
+            policy, token_batch["input_ids"], token_batch["labels"],
+            microbatch_size=math.ceil(len(rollout_responses) / config.gradient_accumulation_steps),
+        )
     loss, metadata = grpo_train_step(
         model=policy,
         tokenizer=tokenizer,
@@ -225,6 +244,9 @@ def run_grpo_iteration(
         rollout_responses=rollout_responses,
         repeated_ground_truths=repeated_ground_truths,
         group_size=config.group_size,
+        importance_reweighting_method=config.importance_reweighting_method,
+        old_log_probs=old_log_probs,
+        cliprange=config.cliprange,
     )
     return {"loss": loss, **metadata}, repeated_prompts, completions
 
