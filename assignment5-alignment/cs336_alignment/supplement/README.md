@@ -1,7 +1,7 @@
 # 附加作业：Instruction Tuning、Safety 和 DPO
 
 这是 A5 附加作业新增实现的独立目录，不是 GRPO 主线目录。
-目前只有目录结构和说明，尚未实现附加作业的评测、SFT 或 DPO 算法。
+当前已实现 MMLU 标准格式答案解析；完整评测脚本、SFT 和 DPO 尚未实现。
 
 ## 文件分类
 
@@ -21,9 +21,9 @@
 ## 后续代码命名
 
 新模块按实际学习步骤创建，不预先放入未实现的函数或空算法文件。
-例如，答案解析和评测逻辑可以放入 `supplement/evaluation.py`，
-SFT 数据处理、SFT 训练和 DPO 分别使用 `supplement/data.py`、`supplement/sft.py`、
-`supplement/dpo.py`。这些名字是后续约定，目前这些文件尚未创建。
+MMLU 答案解析已放入 `supplement/evaluation.py`，只从模型输出提取选项，不读取标准答案。
+后续 SFT 数据处理、SFT 训练和 DPO 分别使用 `supplement/data.py`、`supplement/sft.py`、
+`supplement/dpo.py`；这些文件尚未创建。
 
 实现的导入路径使用 `cs336_alignment.supplement.<模块名>`。
 新增脚本放入 `scripts/supplement/`，从 A5 根目录用
@@ -66,7 +66,13 @@ uv run --frozen pytest -q \
   tests/test_metrics.py tests/test_data.py tests/test_dpo.py
 ```
 
-附加测试目前仍包含未实现接口，预期会失败；目录整理不改变这一状态。
+MMLU 答案解析接口已接通，可单独运行：
+
+```bash
+uv run --frozen pytest -q tests/test_metrics.py tests/test_supplement_mmlu.py -k test_parse_mmlu_response
+```
+
+其余附加测试仍包含未实现接口，预期会失败。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。

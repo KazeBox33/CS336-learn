@@ -64,7 +64,8 @@ uv run --frozen pytest tests/test_grpo.py
 
 The main GRPO adapters in [./tests/adapters.py](./tests/adapters.py) are connected
 to the implementations and pass the local regression. The optional supplement's
-adapters are still unimplemented; their failures should not be mistaken for
+MMLU response parser is connected; its other adapters remain unimplemented and
+their failures should not be mistaken for
 main-track regressions. Separate main/supplement test commands are documented in
 [the supplement guide](./cs336_alignment/supplement/README.md).
 

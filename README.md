@@ -21,7 +21,7 @@ This repository records my implementation-driven study of Stanford CS336: Langua
 | Assignment 5 on/off-policy experiment tooling | Implemented and CPU-tested | Rollouts, fixed old scores, 32 updates per rollout batch, validation, checkpoints, clip fraction, timing and multi-method reports |
 | Assignment 5 GPU experiments | Pending | No real OLMo/vLLM training runs, reward curves or accuracy claims yet |
 | Assignment 5 remaining main-assignment work | Pending | Training-prompt ablation and on-policy-variant experiment configuration, custom estimator, and written analysis |
-| Assignment 5 optional SFT / DPO supplement | Learning started; implementation pending | Handout and starter tools available; separate implementation/script directories and navigation prepared |
+| Assignment 5 optional SFT / DPO supplement | MMLU response parser implemented | Full evaluation script, SFT and DPO remain pending |
 
 Assignment 2's core implementation work is complete for now. The remaining work is to organize the parallelism calculations and run the GPU experiments when the required hardware is available; the optional leaderboard optimization is a separate future project.
 
@@ -116,7 +116,7 @@ Latest local main-track regression: **518 tests passed** on CPU, including tiny-
 
 Still pending: real GPU experiments and analysis; exposing the existing on-policy variant settings and alternate training prompts in the experiment CLI; the custom policy-gradient estimator in Section 7. Optional CISPO and constant-normalized GSPO extensions are not implemented.
 
-The [optional supplement](assignment5-alignment/cs336_alignment/supplement/README.md) covers zero-shot evaluation, SFT, safety evaluation and DPO. Its new code belongs in `cs336_alignment/supplement/` and its new entry points in `scripts/supplement/`. Currently these are package scaffolds, not completed evaluation or training implementations. Existing main-track code and official tests remain in place.
+The [optional supplement](assignment5-alignment/cs336_alignment/supplement/README.md) covers zero-shot evaluation, SFT, safety evaluation and DPO. Its new code belongs in `cs336_alignment/supplement/` and its new entry points in `scripts/supplement/`. MMLU response parsing is implemented; full evaluation and training implementations remain pending. Existing main-track code and official tests remain in place.
 
 Experiment guides: [prompting baselines](assignment5-alignment/PROMPTING_BASELINES.md), [standard GRPO](assignment5-alignment/GRPO_EXPERIMENT_GUIDE.md), and [off-policy comparison](assignment5-alignment/OFF_POLICY_EXPERIMENT_GUIDE.md). GPU experiments will be added when hardware is ready; no validation-accuracy target is claimed as achieved.
 
@@ -163,7 +163,7 @@ uv run --frozen --with matplotlib pytest -q \
   --ignore-glob='tests/test_supplement_*.py'
 ```
 
-The optional supplement's official tests are `test_metrics.py`, `test_data.py` and `test_dpo.py`; their interfaces are still pending implementation. See the [supplement guide](assignment5-alignment/cs336_alignment/supplement/README.md) for separate test commands and output-directory conventions.
+The optional supplement's official tests are `test_metrics.py`, `test_data.py` and `test_dpo.py`; MMLU response parsing is implemented, while the remaining interfaces are pending. See the [supplement guide](assignment5-alignment/cs336_alignment/supplement/README.md) for separate test commands and output-directory conventions.
 
 Regenerate README figures:
 
