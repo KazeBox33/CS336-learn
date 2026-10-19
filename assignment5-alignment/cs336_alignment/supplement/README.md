@@ -1,7 +1,8 @@
 # 附加作业：Instruction Tuning、Safety 和 DPO
 
 这是 A5 附加作业新增实现的独立目录，不是 GRPO 主线目录。
-当前已实现 MMLU 标准格式答案解析；完整评测脚本、SFT 和 DPO 尚未实现。
+当前已实现 MMLU 标准格式答案解析、CSV 数据读取和 zero-shot 双层 prompt 构造；
+完整评测脚本、SFT 和 DPO 尚未实现。本步不加载模型、不启动 GPU。
 
 ## 文件分类
 
@@ -22,6 +23,9 @@
 
 新模块按实际学习步骤创建，不预先放入未实现的函数或空算法文件。
 MMLU 答案解析已放入 `supplement/evaluation.py`，只从模型输出提取选项，不读取标准答案。
+MMLU 数据读取位于 [mmlu.py](./mmlu.py)，prompt 构造位于 [prompting.py](./prompting.py)。
+默认读取 `data/mmlu/test/*_test.csv`，按文件名和文件内行顺序返回题目；
+标准答案保留用于后续评分，不填入模型输入。模板仍使用原位的 `prompts_safety/`。
 后续 SFT 数据处理、SFT 训练和 DPO 分别使用 `supplement/data.py`、`supplement/sft.py`、
 `supplement/dpo.py`；这些文件尚未创建。
 
@@ -70,6 +74,12 @@ MMLU 答案解析接口已接通，可单独运行：
 
 ```bash
 uv run --frozen pytest -q tests/test_metrics.py tests/test_supplement_mmlu.py -k test_parse_mmlu_response
+```
+
+MMLU 数据读取和 prompt 构造测试：
+
+```bash
+uv run --frozen pytest -q tests/test_supplement_mmlu_preparation.py
 ```
 
 其余附加测试仍包含未实现接口，预期会失败。
