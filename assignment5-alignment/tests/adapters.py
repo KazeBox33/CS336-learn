@@ -426,7 +426,9 @@ def run_iterate_batches(
     Returns:
         Iterable over batches, where each batch has size `batch_size`.
     """
-    raise NotImplementedError
+    from cs336_alignment.supplement.data import iterate_batches
+
+    return iterate_batches(dataset, batch_size, shuffle)
 
 
 def run_parse_mmlu_response(

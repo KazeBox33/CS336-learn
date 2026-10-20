@@ -3,7 +3,7 @@ import random
 from pathlib import Path
 
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset
 from transformers import PreTrainedTokenizerBase
 
 
@@ -67,3 +67,10 @@ class PackedSFTDataset(Dataset[dict[str, torch.Tensor]]):
             "input_ids": self._token_ids[start:end],
             "labels": self._token_ids[start + 1 : end + 1],
         }
+
+
+def iterate_batches(
+    dataset: Dataset[dict[str, torch.Tensor]], batch_size: int, shuffle: bool
+) -> DataLoader[dict[str, torch.Tensor]]:
+    """Batch every dataset item once per epoch, retaining an incomplete final batch."""
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, drop_last=False)

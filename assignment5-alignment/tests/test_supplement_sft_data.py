@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 
 import pytest
 import torch
@@ -6,6 +7,7 @@ from transformers import AutoTokenizer
 
 from cs336_alignment.supplement.data import (
     PackedSFTDataset,
+    iterate_batches,
     load_sft_documents,
     tokenize_sft_documents,
 )
@@ -70,3 +72,26 @@ def test_packed_sft_dataset_reserves_next_token_and_checks_bounds():
         empty[0]
     with pytest.raises(ValueError, match="seq_length must be positive"):
         PackedSFTDataset(tokenizer, path, seq_length=0, shuffle=False)
+
+
+def test_iterate_batches_preserves_pairs_and_visits_every_item_once():
+    tokenizer = AutoTokenizer.from_pretrained(FIXTURES_PATH / "Meta-Llama-3-8B", local_files_only=True)
+    dataset = PackedSFTDataset(tokenizer, FIXTURES_PATH / "sft_sample.jsonl", seq_length=32, shuffle=False)
+    expected = Counter((tuple(item["input_ids"].tolist()), tuple(item["labels"].tolist())) for item in dataset)
+    for shuffle in (False, True):
+        loader = iterate_batches(dataset, batch_size=8, shuffle=shuffle)
+        batches = list(loader)
+        assert len(batches) == len(loader) == 10
+        assert batches[-1]["input_ids"].shape == (3, 32)
+        assert batches[-1]["labels"].shape == (3, 32)
+        actual = Counter(
+            (tuple(input_ids.tolist()), tuple(labels.tolist()))
+            for batch in batches
+            for input_ids, labels in zip(batch["input_ids"], batch["labels"], strict=True)
+        )
+        assert actual == expected
+        if not shuffle:
+            assert torch.equal(
+                torch.cat([batch["input_ids"] for batch in batches]),
+                torch.stack([item["input_ids"] for item in dataset]),
+            )
