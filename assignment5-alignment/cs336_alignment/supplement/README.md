@@ -2,7 +2,8 @@
 
 这是 A5 附加作业新增实现的独立目录，不是 GRPO 主线目录。
 当前已实现 MMLU 标准格式答案解析、CSV 数据读取和 zero-shot 双层 prompt 构造；
-完整评测脚本、SFT 和 DPO 尚未实现。本步不加载模型、不启动 GPU。
+SFT 数据准备已完成 JSONL 问答读取与 Alpaca 模板填充；
+完整评测脚本、SFT 数据分词与切块、SFT 训练和 DPO 尚未实现。不加载模型、不启动 GPU。
 
 ## 文件分类
 
@@ -26,8 +27,9 @@ MMLU 答案解析已放入 `supplement/evaluation.py`，只从模型输出提取
 MMLU 数据读取位于 [mmlu.py](./mmlu.py)，prompt 构造位于 [prompting.py](./prompting.py)。
 默认读取 `data/mmlu/test/*_test.csv`，按文件名和文件内行顺序返回题目；
 标准答案保留用于后续评分，不填入模型输入。模板仍使用原位的 `prompts_safety/`。
-后续 SFT 数据处理、SFT 训练和 DPO 分别使用 `supplement/data.py`、`supplement/sft.py`、
-`supplement/dpo.py`；这些文件尚未创建。
+SFT 数据处理位于 [data.py](./data.py)，当前 `load_sft_documents` 只返回完整文档字符串列表，
+尚未分词、拼接或切块。SFT 训练和 DPO 后续分别使用 `supplement/sft.py`、
+`supplement/dpo.py`；这两个文件尚未创建。
 
 实现的导入路径使用 `cs336_alignment.supplement.<模块名>`。
 新增脚本放入 `scripts/supplement/`，从 A5 根目录用
@@ -83,6 +85,8 @@ uv run --frozen pytest -q tests/test_supplement_mmlu_preparation.py
 ```
 
 其余附加测试仍包含未实现接口，预期会失败。
+SFT 文档读取与模板填充可用 `uv run --locked --extra plots pytest -q tests/test_supplement_sft_data.py` 单独验证；
+`tests/test_data.py` 的完整数据集与批处理适配器尚未接通。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。
