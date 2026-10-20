@@ -1,3 +1,6 @@
+import math
+from collections.abc import Sequence
+
 import torch
 from torch.nn import functional as F
 
@@ -15,3 +18,45 @@ def compute_sft_loss(model: torch.nn.Module, batch: dict[str, torch.Tensor]) -> 
         logits.float().reshape(-1, logits.shape[-1]), # 前面的维度合并
         labels.to(device).reshape(-1),
     )
+
+
+def sft_train_step(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    microbatches: Sequence[dict[str, torch.Tensor]],# 一组小批次
+    max_grad_norm: float | None = 1.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor | int]]:
+    """Accumulate packed-token means and update once, including partial final groups.
+
+    The caller supplies up to its configured accumulation count of CPU batches.
+    Every label is a valid packed token. Weight by token counts, not batch counts.
+    """
+    if not microbatches:
+        raise ValueError("Provide at least one SFT microbatch.")
+    if max_grad_norm is not None and (not math.isfinite(max_grad_norm) or max_grad_norm < 0):
+        raise ValueError("max_grad_norm must be finite and non-negative, or None.")
+    token_counts = [batch["labels"].numel() for batch in microbatches]
+    if any(count == 0 for count in token_counts):
+        raise ValueError("SFT microbatches must contain at least one token.")
+    total_tokens = sum(token_counts)
+    total_loss = torch.zeros((), device=next(model.parameters()).device)
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    try:
+        for batch, count in zip(microbatches, token_counts, strict=True):
+            loss = compute_sft_loss(model, batch)
+            weighted_loss = loss * (count / total_tokens)
+            weighted_loss.backward()
+            total_loss += weighted_loss.detach()
+        grad_norm = torch.nn.utils.clip_grad_norm_(
+            model.parameters(), max_grad_norm if max_grad_norm is not None else math.inf,
+            error_if_nonfinite=True,
+        )
+        optimizer.step()
+    finally:
+        optimizer.zero_grad(set_to_none=True)
+    return total_loss, {
+        "grad_norm": grad_norm.detach(),
+        "num_tokens": total_tokens,
+        "num_microbatches": len(microbatches),
+    }

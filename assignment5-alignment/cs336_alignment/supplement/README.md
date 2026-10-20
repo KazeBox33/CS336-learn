@@ -3,7 +3,7 @@
 这是 A5 附加作业新增实现的独立目录，不是 GRPO 主线目录。
 当前已实现 MMLU 标准格式答案解析、CSV 数据读取和 zero-shot 双层 prompt 构造；
 SFT 数据准备已完成 JSONL 问答读取、Alpaca 模板填充、分词与文档结束标记拼接、定长数据集和批处理；
-SFT 已实现前向与 next-token 交叉熵 loss，使用 CPU 小模型测试；
+SFT 已实现前向、next-token 交叉熵 loss，以及多 microbatch 累积后的单次参数更新，使用 CPU 小模型测试；
 完整评测脚本、SFT 训练循环和 DPO 尚未实现，不启动 8B 训练或 GPU 实验。
 
 ## 文件分类
@@ -39,6 +39,10 @@ SFT 数据处理位于 [data.py](./data.py)，`load_sft_documents` 返回完整�
 SFT 前向与 loss 位于 [sft.py](./sft.py)，`compute_sft_loss` 接收模型与 batch 字典，
 将 `(B, T, V)` logits 展平为 `(B*T, V)`，与已经移位的 `(B*T,)` 标签直接计算平均交叉熵。
 不再次移位、不套用 GRPO 的回答掩码，保留梯度供后续训练循环使用。
+`sft_train_step` 接收一组 microbatch，按实际标签 token 数加权 loss，再逐批 backward。
+等大小 microbatch 时等价于各自 loss 除以组内批次数；最后批次或最后一组不足额时，仍按实际 token 总数平均。
+累积完成后只裁剪一次梯度、更新一次参数，返回 detached 平均 loss、裁剪前 grad norm、token 数与批次数。
+函数清除进入前的旧梯度，也在返回或计算异常时清理本组梯度；它不会自行分组或遍历整个 epoch。
 DPO 后续使用 `supplement/dpo.py`，该文件尚未创建。
 
 实现的导入路径使用 `cs336_alignment.supplement.<模块名>`。
@@ -99,6 +103,7 @@ SFT 数据准备、定长数据集与批处理可用 `uv run --locked --extra pl
 `get_packed_sft_dataset` 与 `run_iterate_batches` 均已接通。
 SFT 前向、loss 与梯度测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_loss.py`，
 只使用本地 CPU 小模型，不加载 Llama 8B 权重。
+SFT 单次梯度累积更新测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_step.py`。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。
