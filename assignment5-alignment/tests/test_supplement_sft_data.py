@@ -1,9 +1,14 @@
 import json
 
 import pytest
+import torch
 from transformers import AutoTokenizer
 
-from cs336_alignment.supplement.data import load_sft_documents, tokenize_sft_documents
+from cs336_alignment.supplement.data import (
+    PackedSFTDataset,
+    load_sft_documents,
+    tokenize_sft_documents,
+)
 
 from .common import FIXTURES_PATH
 
@@ -43,3 +48,25 @@ def test_tokenize_sft_documents_matches_official_tokens_and_document_boundaries(
     assert token_ids[-1] == tokenizer.eos_token_id
     assert token_ids.count(tokenizer.bos_token_id) == len(documents)
     assert token_ids.count(tokenizer.eos_token_id) == len(documents)
+
+
+def test_packed_sft_dataset_reserves_next_token_and_checks_bounds():
+    path = FIXTURES_PATH / "sft_sample.jsonl"
+    tokenizer = AutoTokenizer.from_pretrained(FIXTURES_PATH / "Meta-Llama-3-8B", local_files_only=True)
+    token_ids = tokenize_sft_documents(load_sft_documents(path), tokenizer)
+    dataset = PackedSFTDataset(tokenizer, path, seq_length=len(token_ids) - 1, shuffle=False)
+    assert len(dataset) == 1
+    assert dataset[0]["input_ids"].tolist() == token_ids[:-1]
+    assert dataset[0]["labels"].tolist() == token_ids[1:]
+    assert dataset[0]["input_ids"].dtype == torch.long
+    assert dataset[0]["labels"].dtype == torch.long
+    with pytest.raises(IndexError):
+        dataset[1]
+    with pytest.raises(IndexError):
+        dataset[-1]
+    empty = PackedSFTDataset(tokenizer, path, seq_length=len(token_ids), shuffle=False)
+    assert len(empty) == 0
+    with pytest.raises(IndexError):
+        empty[0]
+    with pytest.raises(ValueError, match="seq_length must be positive"):
+        PackedSFTDataset(tokenizer, path, seq_length=0, shuffle=False)

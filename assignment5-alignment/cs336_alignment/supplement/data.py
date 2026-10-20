@@ -1,6 +1,9 @@
 import json
+import random
 from pathlib import Path
 
+import torch
+from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
 
 
@@ -31,3 +34,36 @@ def tokenize_sft_documents(documents: list[str], tokenizer: PreTrainedTokenizerB
         token_ids.extend(tokenizer.encode(document, add_special_tokens=True))
         token_ids.append(eos_token_id)
     return token_ids
+
+
+class PackedSFTDataset(Dataset[dict[str, torch.Tensor]]):
+    """Expose consecutive fixed-length input/next-token pairs from SFT documents."""
+
+    def __init__(
+        self,
+        tokenizer: PreTrainedTokenizerBase,
+        dataset_path: str | Path,
+        seq_length: int,
+        shuffle: bool,
+    ):
+        if seq_length <= 0:
+            raise ValueError("seq_length must be positive.")
+        documents = load_sft_documents(dataset_path)
+        if shuffle:
+            random.shuffle(documents)
+        self._token_ids = torch.tensor(tokenize_sft_documents(documents, tokenizer), dtype=torch.long)
+        self.seq_length = seq_length
+
+    def __len__(self) -> int:
+        # Reserve one extra token for the final input position's label.
+        return max(0, (self._token_ids.numel() - 1) // self.seq_length) # - 1 是为了对其
+
+    def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
+        if i < 0 or i >= len(self):
+            raise IndexError("SFT dataset index out of range.")
+        start = i * self.seq_length
+        end = start + self.seq_length
+        return {
+            "input_ids": self._token_ids[start:end],
+            "labels": self._token_ids[start + 1 : end + 1],
+        }
