@@ -1,8 +1,9 @@
 import json
 
 import pytest
+from transformers import AutoTokenizer
 
-from cs336_alignment.supplement.data import load_sft_documents
+from cs336_alignment.supplement.data import load_sft_documents, tokenize_sft_documents
 
 from .common import FIXTURES_PATH
 
@@ -16,7 +17,7 @@ def test_load_sft_documents_uses_official_template_and_preserves_content():
         assert document == (
             "Below is an instruction that describes a task. "
             "Write a response that appropriately completes the request.\n\n"
-            f"### Instruction:\n{example['prompt']}\n\n### Response:\n{example['response']}\n"
+            f"### Instruction:\n{example['prompt']}\n\n### Response:\n{example['response']}"
         )
 
 
@@ -26,3 +27,19 @@ def test_load_sft_documents_reports_invalid_fields_without_skipping_samples(tmp_
     with pytest.raises(ValueError, match="line 2: prompt and response must be strings") as error:
         load_sft_documents(path)
     assert str(path) in str(error.value)
+
+
+def test_tokenize_sft_documents_matches_official_tokens_and_document_boundaries():
+    tokenizer = AutoTokenizer.from_pretrained(FIXTURES_PATH / "Meta-Llama-3-8B", local_files_only=True)
+    documents = load_sft_documents(FIXTURES_PATH / "sft_sample.jsonl")
+    token_ids = tokenize_sft_documents(documents, tokenizer)
+    expected_examples = json.loads((FIXTURES_PATH / "tokenized_sft_sample.json").read_text(encoding="utf-8"))
+    seq_length = len(expected_examples[0]["input_ids"])
+    for i, example in enumerate(expected_examples):
+        start = i * seq_length
+        assert token_ids[start : start + seq_length] == example["input_ids"]
+        assert token_ids[start + 1 : start + seq_length + 1] == example["labels"]
+    assert token_ids[0] == tokenizer.bos_token_id
+    assert token_ids[-1] == tokenizer.eos_token_id
+    assert token_ids.count(tokenizer.bos_token_id) == len(documents)
+    assert token_ids.count(tokenizer.eos_token_id) == len(documents)
