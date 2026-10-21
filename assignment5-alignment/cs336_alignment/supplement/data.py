@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader, Dataset
 from transformers import PreTrainedTokenizerBase
+from xopen import xopen
 
 
 def load_sft_documents(dataset_path: str | Path) -> list[str]:
@@ -13,7 +14,7 @@ def load_sft_documents(dataset_path: str | Path) -> list[str]:
     template = template_path.read_text(encoding="utf-8").rstrip("\n")
     documents = []
     path = Path(dataset_path)
-    with path.open(encoding="utf-8") as file:
+    with xopen(path, "rt", encoding="utf-8") as file:
         for line_number, line in enumerate(file, start=1):
             example = json.loads(line)
             if not isinstance(example, dict) or not all(

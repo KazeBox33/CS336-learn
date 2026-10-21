@@ -5,7 +5,8 @@
 SFT 数据准备已完成 JSONL 问答读取、Alpaca 模板填充、分词与文档结束标记拼接、定长数据集和批处理；
 SFT 已实现前向、next-token 交叉熵 loss、多 microbatch 累积更新、单 epoch 循环、验证集 loss 和学习率调度，使用 CPU 小模型测试；
 已支持模型与 tokenizer 导出并用本地小模型验证重新加载；
-完整评测脚本、SFT 训练入口（连接配置、日志、定期验证与保存）和 DPO 尚未实现，不启动 8B 训练或 GPU 实验。
+SFT 训练入口已接通配置、日志、定期验证和最终保存，并通过本地 CPU 小模型的命令行端到端测试；
+完整评测脚本和 DPO 尚未实现，真实 8B 训练与 GPU 实验仍未运行。
 
 ## 文件分类
 
@@ -30,6 +31,7 @@ MMLU 数据读取位于 [mmlu.py](./mmlu.py)，prompt 构造位于 [prompting.py
 默认读取 `data/mmlu/test/*_test.csv`，按文件名和文件内行顺序返回题目；
 标准答案保留用于后续评分，不填入模型输入。模板仍使用原位的 `prompts_safety/`。
 SFT 数据处理位于 [data.py](./data.py)，`load_sft_documents` 返回完整文档字符串列表，
+支持普通 `.jsonl` 与讲义所用的 `.jsonl.gz` 压缩文件。
 只移除模板文件自带的尾部换行，不裁剪问答字段，以便在回答后直接追加 EOS。
 `tokenize_sft_documents` 使用分词器默认特殊标记编码每篇文档，再追加 EOS 并拼接为 token ID 列表。
 官方 Llama 测试数据包含每篇文档的 BOS 和 EOS，不沿用主线 GRPO 的无特殊标记分词规则。
@@ -52,24 +54,45 @@ SFT 前向与 loss 位于 [sft.py](./sft.py)，`compute_sft_loss` 接收模型�
 `create_sft_lr_scheduler` 使用 PyTorch `LambdaLR`，将 optimizer 初始学习率作为峰值，先线性 warmup 再 cosine 衰减至零。
 `total_updates` 和 `warmup_updates` 都按 optimizer 更新计数，不按 microbatch 计数；总更新数应包含每个 epoch 的不足额尾组。
 有 warmup 时第一个更新的学习率为零；无 warmup 时从峰值开始。最后一次更新后，为下一次设置的学习率为零。
-scheduler 在整个训练开始时只创建一次，跨 epoch 复用；讲义建议的 3% warmup 步数由后续入口按总更新数换算。
+scheduler 在整个训练开始时只创建一次，跨 epoch 复用；训练入口将 warmup_ratio 乘总更新数并向上取整。
+warmup 最多为 `total_updates - 1`，因此只有一次更新的 CPU 小测试会禁用 warmup，保留实际参数更新。
 `evaluate_sft` 独立遍历验证批次，在 eval 模式和 no_grad 下按实际 token 数汇总 `val_loss`。
 它不 backward、不更新参数、不清理已有梯度；正常结束或计算异常时均恢复模型进入前的 train/eval 模式。
-空验证集会报错，不返回虚假的零 loss；调用方后续再负责安排定期验证。
+空验证集会报错，不返回虚假的零 loss；训练入口负责在训练前、指定更新间隔及最后一次更新后验证。
 SFT 导出位于 [checkpoint.py](./checkpoint.py)，`save_sft_model` 将模型权重、配置和 tokenizer 保存为 HF 格式。
 模型与 tokenizer 先写入同级临时目录，全部成功后再发布为目标目录；写入失败会清理临时数据，不覆盖已有目标。
 该导出用于评测和后续 DPO 加载，不保存 optimizer、scheduler、随机状态或数据进度，因此不是完整断点续训 checkpoint。
-函数本身不训练、不改变模型 train/eval 模式；后续训练入口在训练结束时调用，当前不会自动保存。
+函数本身不训练、不改变模型 train/eval 模式；训练入口在全部训练和最终验证完成后调用。
 DPO 后续使用 `supplement/dpo.py`，该文件尚未创建。
 
 实现的导入路径使用 `cs336_alignment.supplement.<模块名>`。
-新增脚本放入 `scripts/supplement/`，从 A5 根目录用
-`uv run --frozen python -m scripts.supplement.<入口名>` 运行。
-这只是入口命名约定，不是现在可执行的训练命令。
+新增脚本放入 `scripts/supplement/`，当前 SFT 入口为 [train_sft.py](../../scripts/supplement/train_sft.py)。
+从 A5 根目录运行 `uv run --frozen python -m scripts.supplement.train_sft --help` 可查看参数，不会训练。
 
 不把附加作业实现直接写进主线 `training.py`、`policy.py`、`prompting*.py` 或测试适配器。
 `vllm_utils.py` 等工具可以按需复用，但先确认行为是否适合，不为分类而移动或复制它们。
 已有 `checkpoint.py` 等模块也不搬迁；其中主线专用逻辑不视为附加作业的默认实现。
+
+## SFT 训练入口
+
+编排逻辑位于 [sft_training.py](./sft_training.py)：`SFTTrainingConfig` 校验参数，`run_sft_training` 接收已经加载的单设备模型与 tokenizer。
+默认设置为 1 epoch、context 512、microbatch size 1、梯度累积 32 次（单设备有效 batch size 32）、
+AdamW 学习率 2e-5、weight decay 0.1、3% warmup、cosine decay、梯度裁剪 1.0。
+默认每 10 次参数更新记录训练指标、每 100 次更新验证；最终更新总会记录并验证。
+训练记录的 loss 是该次更新所用数据的 token 平均值，不是日志间隔内所有更新的平均值。
+CLI 要求显式提供 `--model-id`、`--train-path`、`--val-path` 和 `--output-dir`，不默认下载 8B 模型。
+默认 `--device cpu --dtype float32 --attn-implementation eager`；将来使用 CUDA 时可显式选择 bf16 和 FlashAttention 2（需对应依赖）。
+可用 `--local-files-only` 禁止下载，用 `--gradient-checkpointing` 启用模型提供的激活重计算。
+没有使用 Hugging Face Trainer；当前为单设备完整参数微调，不包含分布式训练、量化或 LoRA。
+
+输出目录必须不存在，内容为：
+
+- `run.json`：配置、数据规模、计划更新次数、warmup 次数和最终验证 loss；只在最终模型保存成功后标记 `completed=true`。
+- `metrics.jsonl`：带全局更新编号和 epoch 编号的训练/验证记录，同时输出到控制台。
+- `final/`：最终模型和 tokenizer，可供后续评测或 DPO 加载，不含断点续训状态。
+
+每个 epoch 重新遍历并打乱训练数据块；文档顺序只在初次打包时按 seed 打乱，验证数据不打乱。
+CPU 小模型测试会实际走完命令行入口；这不代表已完成 Llama 8B 实验，也不提供虚构的验证结果或学习曲线。
 
 ## 数据和结果
 
@@ -125,6 +148,7 @@ SFT 单 epoch 分组、尾组更新与惰性消费测试使用 `uv run --frozen 
 SFT 验证集加权 loss、模式恢复与无梯度测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_evaluation.py`。
 SFT warmup/cosine 学习率与按更新推进的测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_schedule.py`。
 SFT 模型/tokenizer 导出、重新加载与失败清理测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_checkpoint.py`。
+SFT 训练编排和真实 CPU 命令行端到端测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_training.py`。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。
