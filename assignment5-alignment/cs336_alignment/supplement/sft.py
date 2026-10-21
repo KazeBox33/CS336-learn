@@ -1,5 +1,6 @@
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from itertools import islice
 
 import torch
 from torch.nn import functional as F
@@ -60,3 +61,30 @@ def sft_train_step(
         "num_tokens": total_tokens,
         "num_microbatches": len(microbatches),
     }
+
+
+def run_sft_epoch(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    batches: Iterable[dict[str, torch.Tensor]],
+    gradient_accumulation_steps: int, # 梯度累计的次数
+    max_grad_norm: float | None = 1.0,
+) -> Iterator[tuple[int, dict[str, float | int]]]:
+    """Lazily train one epoch, yielding metrics after each optimizer update.
+
+    Update numbers start at 1 within this epoch. Empty inputs yield no updates.
+    Keep only one accumulation group of CPU batches, including a partial tail.
+    """
+    if not isinstance(gradient_accumulation_steps, int) or gradient_accumulation_steps <= 0:
+        raise ValueError("gradient_accumulation_steps must be a positive integer.")
+    batch_iterator = iter(batches)
+    update = 0
+    while microbatches := list(islice(batch_iterator, gradient_accumulation_steps)):
+        loss, metadata = sft_train_step(model, optimizer, microbatches, max_grad_norm)
+        update += 1
+        yield update, {
+            "loss": loss.item(),
+            "grad_norm": metadata["grad_norm"].item(),
+            "num_tokens": metadata["num_tokens"],
+            "num_microbatches": metadata["num_microbatches"],
+        }
