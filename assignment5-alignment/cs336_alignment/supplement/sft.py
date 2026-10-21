@@ -63,12 +63,38 @@ def sft_train_step(
     }
 
 
-def run_sft_epoch(
+def create_sft_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    total_updates: int,
+    warmup_updates: int = 0,
+) -> torch.optim.lr_scheduler.LambdaLR:
+    """Linear warmup then cosine decay, indexed by completed optimizer updates.
+
+    The optimizer's initial learning rates are the peaks. With warmup, the first
+    update uses zero LR; after total_updates updates the next LR is zero.
+    Create once for the entire run, not once per epoch.
+    """
+    if not isinstance(total_updates, int) or total_updates <= 0:
+        raise ValueError("total_updates must be a positive integer.")
+    if not isinstance(warmup_updates, int) or not 0 <= warmup_updates < total_updates:
+        raise ValueError("warmup_updates must be an integer in [0, total_updates).")
+
+    def lr_factor(completed_updates: int) -> float:
+        if completed_updates < warmup_updates:
+            return completed_updates / warmup_updates
+        progress = min((completed_updates - warmup_updates) / (total_updates - warmup_updates), 1.0)
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_factor)
+
+
+def run_sft_epoch( # 验证的，不反向也不更新参数
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     batches: Iterable[dict[str, torch.Tensor]],
     gradient_accumulation_steps: int, # 梯度累计的次数
     max_grad_norm: float | None = 1.0,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> Iterator[tuple[int, dict[str, float | int]]]:
     """Lazily train one epoch, yielding metrics after each optimizer update.
 
@@ -77,16 +103,22 @@ def run_sft_epoch(
     """
     if not isinstance(gradient_accumulation_steps, int) or gradient_accumulation_steps <= 0:
         raise ValueError("gradient_accumulation_steps must be a positive integer.")
+    if scheduler is not None and scheduler.optimizer is not optimizer:
+        raise ValueError("The scheduler must belong to the training optimizer.")
     batch_iterator = iter(batches)
     update = 0
     while microbatches := list(islice(batch_iterator, gradient_accumulation_steps)):
+        learning_rate = float(optimizer.param_groups[0]["lr"])
         loss, metadata = sft_train_step(model, optimizer, microbatches, max_grad_norm)
+        if scheduler is not None:
+            scheduler.step()
         update += 1
         yield update, {
             "loss": loss.item(),
             "grad_norm": metadata["grad_norm"].item(),
             "num_tokens": metadata["num_tokens"],
             "num_microbatches": metadata["num_microbatches"],
+            "learning_rate": learning_rate,
         }
 
 
