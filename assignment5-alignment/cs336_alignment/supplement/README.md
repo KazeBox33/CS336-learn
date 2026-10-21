@@ -6,7 +6,8 @@ SFT 数据准备已完成 JSONL 问答读取、Alpaca 模板填充、分词与�
 SFT 已实现前向、next-token 交叉熵 loss、多 microbatch 累积更新、单 epoch 循环、验证集 loss 和学习率调度，使用 CPU 小模型测试；
 已支持模型与 tokenizer 导出并用本地小模型验证重新加载；
 SFT 训练入口已接通配置、日志、定期验证和最终保存，并通过本地 CPU 小模型的命令行端到端测试；
-完整评测脚本和 DPO 尚未实现，真实 8B 训练与 GPU 实验仍未运行。
+HH 偏好数据已实现四文件合并、单轮过滤、问题/回答拆分与来源保留；
+完整评测脚本、DPO loss 与训练尚未实现，真实 8B 训练与 GPU 实验仍未运行。
 
 ## 文件分类
 
@@ -94,6 +95,18 @@ CLI 要求显式提供 `--model-id`、`--train-path`、`--val-path` 和 `--outpu
 每个 epoch 重新遍历并打乱训练数据块；文档顺序只在初次打包时按 seed 打乱，验证数据不打乱。
 CPU 小模型测试会实际走完命令行入口；这不代表已完成 Llama 8B 实验，也不提供虚构的验证结果或学习曲线。
 
+## HH 偏好数据
+
+`look_at_hh` 的 (a) 位于 [hh.py](./hh.py)：`load_hh_preferences(data_dir)` 按固定顺序读取四个官方 `.jsonl.gz` 文件，
+返回 `HHPreferenceExample` 列表，每条包含 `instruction`、`chosen`、`rejected` 和来源文件名 `source`。
+任一分支包含多条 `\n\nHuman:` 消息就过滤整对；单轮样本按第一个 `\n\nAssistant:` 拆分，保留回答中后续的 Assistant 标记及内部换行。
+只去除拆分字段边界的空白，不额外过滤空回答；格式错误或两边问题不同会报告文件及行号，缺文件也会报错。
+`source` 是分析用元数据，不是模型输入。该步骤不分词、不计算 loss、不训练模型，不需 GPU，也不需要 adapters 转接。
+当前本地四文件共 160800 对，过滤 111364 对多轮样本后保留 49436 对；保留样本中 15 条 chosen、33 条 rejected 为空回答。
+按文件的保留数量为：harmless-base 12253、helpful-base 12843、helpful-online 7578、helpful-rejection-sampled 16762。
+这些是当前本地文件的实际读取统计，不是训练或模型评测结果。
+本步完成 (a)；(b) 的 3 条 helpful 和 3 条 harmless 随机样本及标签讨论留到下一小步。
+
 ## 数据和结果
 
 - [data/gsm8k/](../../data/gsm8k/)：原始题目可共享；主线和附加作业的提示格式及答案解析规则分别实现。
@@ -149,6 +162,7 @@ SFT 验证集加权 loss、模式恢复与无梯度测试使用 `uv run --frozen
 SFT warmup/cosine 学习率与按更新推进的测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_schedule.py`。
 SFT 模型/tokenizer 导出、重新加载与失败清理测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_checkpoint.py`。
 SFT 训练编排和真实 CPU 命令行端到端测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_training.py`。
+HH 数据合并、过滤、拆分与来源测试使用 `uv run --frozen pytest -q tests/test_supplement_hh.py`。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。
