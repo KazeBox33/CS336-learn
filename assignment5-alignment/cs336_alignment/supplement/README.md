@@ -7,7 +7,7 @@ SFT 已实现前向、next-token 交叉熵 loss、多 microbatch 累积更新、
 已支持模型与 tokenizer 导出并用本地小模型验证重新加载；
 SFT 训练入口已接通配置、日志、定期验证和最终保存，并通过本地 CPU 小模型的命令行端到端测试；
 HH 偏好数据已实现四文件合并、单轮过滤、问题/回答拆分与来源保留；
-完整评测脚本、DPO loss 与训练尚未实现，真实 8B 训练与 GPU 实验仍未运行。
+单样本 DPO loss 已实现并接通官方测试接口；完整评测脚本和 DPO 训练尚未实现，真实 8B 训练与 GPU 实验仍未运行。
 
 ## 文件分类
 
@@ -64,7 +64,12 @@ SFT 导出位于 [checkpoint.py](./checkpoint.py)，`save_sft_model` 将模型�
 模型与 tokenizer 先写入同级临时目录，全部成功后再发布为目标目录；写入失败会清理临时数据，不覆盖已有目标。
 该导出用于评测和后续 DPO 加载，不保存 optimizer、scheduler、随机状态或数据进度，因此不是完整断点续训 checkpoint。
 函数本身不训练、不改变模型 train/eval 模式；训练入口在全部训练和最终验证完成后调用。
-DPO 后续使用 `supplement/dpo.py`，该文件尚未创建。
+DPO 单样本 loss 位于 [dpo.py](./dpo.py)，使用相同 Alpaca 模板组织 chosen/rejected 文档，按分词器规则编码后追加 EOS token ID。
+复用主线的 token log-probability 函数，以错开一位的输入/标签计算完整序列分数并求和，不取平均、不截断、不 padding。
+每个模型内部的 chosen-minus-rejected 差值会抵消共同提示前缀的分数；实际 tokenizer 应保持两条文档的共同提示 token 前缀一致。
+参考模型在 no_grad 下评分，分数移到当前模型设备后计算稳定的 `-logsigmoid(beta * (policy_margin - ref_margin))`。
+评分时临时将两个模型设为 eval 以关闭 dropout，正常返回或报错后恢复进入时的 train/eval 模式；当前模型仍保留计算图。
+函数不 backward、不更新参数、不清理已有梯度，也不永久修改 requires_grad；DPO 训练循环后续再负责冻结参考参数和优化当前模型。
 
 实现的导入路径使用 `cs336_alignment.supplement.<模块名>`。
 新增脚本放入 `scripts/supplement/`，当前 SFT 入口为 [train_sft.py](../../scripts/supplement/train_sft.py)。
@@ -163,6 +168,9 @@ SFT warmup/cosine 学习率与按更新推进的测试使用 `uv run --frozen py
 SFT 模型/tokenizer 导出、重新加载与失败清理测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_checkpoint.py`。
 SFT 训练编排和真实 CPU 命令行端到端测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_training.py`。
 HH 数据合并、过滤、拆分与来源测试使用 `uv run --frozen pytest -q tests/test_supplement_hh.py`。
+DPO 官方 loss 接口使用 `uv run --frozen pytest -q -k test_per_instance_dpo_loss`；
+补充的数值、梯度、EOS 和模式恢复测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_loss.py`。
+双 CUDA 设备测试仅在存在两张 CUDA GPU 时运行；CPU 测试通过不代表已验证真实跨 GPU 训练。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。
