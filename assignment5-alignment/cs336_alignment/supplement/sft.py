@@ -88,3 +88,32 @@ def run_sft_epoch(
             "num_tokens": metadata["num_tokens"],
             "num_microbatches": metadata["num_microbatches"],
         }
+
+
+@torch.no_grad()
+def evaluate_sft(
+    model: torch.nn.Module,
+    batches: Iterable[dict[str, torch.Tensor]],
+) -> dict[str, float | int]:
+    """Evaluate packed-token mean loss without changing parameters or gradients."""
+    was_training = model.training
+    total_loss = torch.zeros((), device=next(model.parameters()).device)
+    total_tokens = 0
+    num_batches = 0
+    model.eval()
+    try:
+        for batch in batches:
+            loss = compute_sft_loss(model, batch)
+            num_tokens = batch["labels"].numel()
+            total_loss += loss * num_tokens
+            total_tokens += num_tokens
+            num_batches += 1
+    finally:
+        model.train(was_training)
+    if total_tokens == 0:
+        raise ValueError("SFT validation requires at least one token.")
+    return {
+        "val_loss": (total_loss / total_tokens).item(),
+        "num_tokens": total_tokens,
+        "num_batches": num_batches,
+    }
