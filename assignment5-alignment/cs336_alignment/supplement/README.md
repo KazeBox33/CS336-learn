@@ -4,7 +4,8 @@
 当前已实现 MMLU 标准格式答案解析、CSV 数据读取和 zero-shot 双层 prompt 构造；
 SFT 数据准备已完成 JSONL 问答读取、Alpaca 模板填充、分词与文档结束标记拼接、定长数据集和批处理；
 SFT 已实现前向、next-token 交叉熵 loss、多 microbatch 累积更新、单 epoch 循环、验证集 loss 和学习率调度，使用 CPU 小模型测试；
-完整评测脚本、SFT 训练入口（含定期验证、保存）和 DPO 尚未实现，不启动 8B 训练或 GPU 实验。
+已支持模型与 tokenizer 导出并用本地小模型验证重新加载；
+完整评测脚本、SFT 训练入口（连接配置、日志、定期验证与保存）和 DPO 尚未实现，不启动 8B 训练或 GPU 实验。
 
 ## 文件分类
 
@@ -55,6 +56,10 @@ scheduler 在整个训练开始时只创建一次，跨 epoch 复用；讲义建
 `evaluate_sft` 独立遍历验证批次，在 eval 模式和 no_grad 下按实际 token 数汇总 `val_loss`。
 它不 backward、不更新参数、不清理已有梯度；正常结束或计算异常时均恢复模型进入前的 train/eval 模式。
 空验证集会报错，不返回虚假的零 loss；调用方后续再负责安排定期验证。
+SFT 导出位于 [checkpoint.py](./checkpoint.py)，`save_sft_model` 将模型权重、配置和 tokenizer 保存为 HF 格式。
+模型与 tokenizer 先写入同级临时目录，全部成功后再发布为目标目录；写入失败会清理临时数据，不覆盖已有目标。
+该导出用于评测和后续 DPO 加载，不保存 optimizer、scheduler、随机状态或数据进度，因此不是完整断点续训 checkpoint。
+函数本身不训练、不改变模型 train/eval 模式；后续训练入口在训练结束时调用，当前不会自动保存。
 DPO 后续使用 `supplement/dpo.py`，该文件尚未创建。
 
 实现的导入路径使用 `cs336_alignment.supplement.<模块名>`。
@@ -119,6 +124,7 @@ SFT 单次梯度累积更新测试使用 `uv run --frozen pytest -q tests/test_s
 SFT 单 epoch 分组、尾组更新与惰性消费测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_epoch.py`。
 SFT 验证集加权 loss、模式恢复与无梯度测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_evaluation.py`。
 SFT warmup/cosine 学习率与按更新推进的测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_schedule.py`。
+SFT 模型/tokenizer 导出、重新加载与失败清理测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_checkpoint.py`。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。
