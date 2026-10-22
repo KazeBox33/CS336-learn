@@ -7,7 +7,8 @@ SFT 已实现前向、next-token 交叉熵 loss、多 microbatch 累积更新、
 已支持模型与 tokenizer 导出并用本地小模型验证重新加载；
 SFT 训练入口已接通配置、日志、定期验证和最终保存，并通过本地 CPU 小模型的命令行端到端测试；
 HH 偏好数据已实现四文件合并、单轮过滤、问题/回答拆分与来源保留；
-单样本 DPO loss 已实现并接通官方测试接口；完整评测脚本和 DPO 训练尚未实现，真实 8B 训练与 GPU 实验仍未运行。
+单样本 DPO loss 和单组梯度累积更新已实现并通过 CPU 小模型测试；
+完整评测脚本、DPO epoch/验证/训练入口尚未实现，真实 8B 训练与 GPU 实验仍未运行。
 
 ## 文件分类
 
@@ -112,6 +113,19 @@ CPU 小模型测试会实际走完命令行入口；这不代表已完成 Llama 
 这些是当前本地文件的实际读取统计，不是训练或模型评测结果。
 本步完成 (a)；(b) 的 3 条 helpful 和 3 条 harmless 随机样本及标签讨论留到下一小步。
 
+## DPO 训练（分步）
+
+单次更新位于 [dpo_training.py](./dpo_training.py)：`dpo_train_step` 接收当前模型、参考模型、tokenizer、optimizer 和一组 HH 样本。
+每次只处理一对 chosen/rejected，使用已有 DPO loss，除以本组实际样本数后立即 backward，最后更新一次参数。
+这里按偏好样本对平均，不像 SFT 按 token 数加权；一条偏好样本内部的序列 log-probability 仍然求和，不做长度归一化。
+调用方以后再按 gradient accumulation steps 分组；本函数天然支持最后不足一组的实际样本数。
+函数会永久冻结参考参数并将参考模型设为 eval；optimizer 只能含当前模型参数，并且必须覆盖全部可训练的当前参数。
+当前模型与参考模型不能共享 Parameter 对象。当前模型设为 train，但复用的评分函数会临时关闭 dropout，同时保留当前模型的计算图。
+返回 detached 组平均 loss、裁剪前 grad norm 和样本对数；清除进入前的 optimizer 梯度，以及本组结束或计算异常时的梯度。
+`max_grad_norm=None` 默认只测量梯度范数、不裁剪；显式传入阈值时在全部 backward 后裁剪一次。非有限梯度会阻止更新。
+optimizer 由调用方传入，CPU 测试采用讲义建议的 RMSprop；正式入口后续再接学习率 1e-6、beta 0.1、有效 batch size 64 等配置。
+本步不遍历 epoch、不计算验证准确率、不保存最佳 checkpoint、不运行真实 GPU 训练；optimizer.step 自身失败时不承诺回滚参数。
+
 ## 数据和结果
 
 - [data/gsm8k/](../../data/gsm8k/)：原始题目可共享；主线和附加作业的提示格式及答案解析规则分别实现。
@@ -171,6 +185,7 @@ HH 数据合并、过滤、拆分与来源测试使用 `uv run --frozen pytest -
 DPO 官方 loss 接口使用 `uv run --frozen pytest -q -k test_per_instance_dpo_loss`；
 补充的数值、梯度、EOS 和模式恢复测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_loss.py`。
 双 CUDA 设备测试仅在存在两张 CUDA GPU 时运行；CPU 测试通过不代表已验证真实跨 GPU 训练。
+DPO 单次 RMSprop 更新、样本对平均与参考冻结测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_step.py`。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。
