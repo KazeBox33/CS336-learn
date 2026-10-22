@@ -8,7 +8,8 @@ SFT 已实现前向、next-token 交叉熵 loss、多 microbatch 累积更新、
 SFT 训练入口已接通配置、日志、定期验证和最终保存，并通过本地 CPU 小模型的命令行端到端测试；
 HH 偏好数据已实现四文件合并、单轮过滤、问题/回答拆分与来源保留；
 单样本 DPO loss、单组梯度累积更新、单 epoch 循环和验证 loss/准确率已实现并通过 CPU 小模型测试；
-DPO 最佳 checkpoint 的判断与导出已实现；完整评测脚本和 DPO 训练入口尚未实现，真实 8B 训练与 GPU 实验仍未运行。
+DPO 最佳 checkpoint 与完整训练入口已接通，并通过两份本地 CPU 小模型的命令行端到端测试；
+完整下游评测脚本尚未实现，真实 8B 训练、GPU 实验与实验图表仍未完成。
 
 ## 文件分类
 
@@ -75,8 +76,8 @@ DPO 单样本 loss 位于 [dpo.py](./dpo.py)，使用相同 Alpaca 模板组织 
 原有 `compute_per_instance_dpo_loss` 仍只返回 loss，官方 adapter 接口不变；验证可直接复用两个 margin，不额外运行前向。
 
 实现的导入路径使用 `cs336_alignment.supplement.<模块名>`。
-新增脚本放入 `scripts/supplement/`，当前 SFT 入口为 [train_sft.py](../../scripts/supplement/train_sft.py)。
-从 A5 根目录运行 `uv run --frozen python -m scripts.supplement.train_sft --help` 可查看参数，不会训练。
+新增脚本放入 `scripts/supplement/`，当前入口为 [train_sft.py](../../scripts/supplement/train_sft.py) 和 [train_dpo.py](../../scripts/supplement/train_dpo.py)。
+从 A5 根目录运行 `uv run --frozen python -m scripts.supplement.train_sft --help` 或 `uv run --frozen python -m scripts.supplement.train_dpo --help` 可查看参数，不会训练。
 
 不把附加作业实现直接写进主线 `training.py`、`policy.py`、`prompting*.py` 或测试适配器。
 `vllm_utils.py` 等工具可以按需复用，但先确认行为是否适合，不为分类而移动或复制它们。
@@ -140,8 +141,26 @@ optimizer 由调用方传入，CPU 测试采用讲义建议的 RMSprop；正式�
 首次验证（即使准确率为 0）会保存；以后仅准确率严格提高时保存，相同准确率保留较早的模型，不以 loss 打破平局。
 返回不可变的 `DPOBestCheckpoint(accuracy, update, path)`；调用方在后续验证时传回它，不提升时直接返回原记录且不写磁盘。
 模型与 tokenizer 保存到 `step_000001` 等独立目录，复用已有安全 HF 导出；新记录只在保存成功后返回，旧目录不覆盖、不删除。
-这里只保存当前模型与 tokenizer，不保存参考模型、optimizer 或数据进度；best 记录目前由调用方保存在内存，完整入口后续再写入运行摘要。
-当前尚未把验证间隔、最佳保存和 epoch 循环接成完整训练入口，也没有真实 GPU 训练结果。
+这里只保存当前模型与 tokenizer，不保存参考模型、optimizer 或数据进度；完整入口将 best 记录写入运行摘要。
+
+## DPO 训练入口
+
+编排位于 [dpo_experiment.py](./dpo_experiment.py)，命令行入口为 [train_dpo.py](../../scripts/supplement/train_dpo.py)，没有使用 HF Trainer。
+CLI 从同一个 SFT checkpoint 独立加载当前模型和参考模型，默认两者均在 CPU、float32、eager attention；必须显式提供 `--model-id` 和新的 `--output-dir`。
+`--data-dir` 默认 `data/hh`；`--local-files-only` 可禁止下载。将来可显式设置 `--policy-device cuda:0 --reference-device cuda:1 --dtype bfloat16`，但本机未验证真实双 GPU 训练。
+默认 1 epoch、RMSprop 学习率 1e-6、beta 0.1、每 64 对样本更新一次，固定学习率，无额外 scheduler，默认不裁剪梯度。
+`--validation-size 200` 表示固定 seed 随机保留 200 个不同问题，所有属于这些问题的偏好对一起进入验证集，因此实际验证样本可能多于 200 对。
+划分后训练与验证不共享问题，不丢弃重复问题的偏好对；每个 epoch 使用局部 RNG 打乱训练样本顺序。
+默认每次参数更新记录训练 loss/grad norm/组大小/学习率，每 20 次更新验证；训练前和最后一次更新后也验证。
+训练前首次验证会保存 step 0 的初始 SFT 权重，若后续均未超过其准确率，它可以成为最终最佳模型。
+输出目录必须不存在，包含：
+
+- `metrics.jsonl`：全局更新编号、epoch、训练/验证指标及 best 指标，同时打印到控制台。
+- `run.json`：超参数、设备、数据规模、更新计划、最佳准确率/更新编号/模型路径和最终验证指标；每次成功验证保存后更新 best，训练全部成功后才设 `completed=true`。
+- `checkpoints/step_XXXXXX/`：仅保存严格提升时的当前模型与 tokenizer，保留历史最佳，不单独保存最后模型，不包含断点续训状态。
+
+返回的 `best_model_dir` 是最高验证准确率对应的权重路径；训练结束时内存中的模型仍是最后更新后的参数，不自动回滚为 best。
+CPU 端到端测试覆盖实际训练、参考冻结、日志、分组划分、最佳模型非最终模型以及保存后加载；真实 Llama 8B 结果、准确率截图和下游评测仍待实验。
 
 ## 数据和结果
 
@@ -206,6 +225,7 @@ DPO 单次 RMSprop 更新、样本对平均与参考冻结测试使用 `uv run -
 DPO 单 epoch 分组、尾组、惰性执行及顺序更新测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_epoch.py`。
 DPO 验证 loss、讲义准确率口径、无梯度和模式恢复测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_evaluation.py`。
 DPO 最佳模型判断、平局规则、导出失败与重新加载测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_checkpoint.py`。
+DPO 数据划分、完整编排与真实 CPU 命令行端到端测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_experiment.py`。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。
