@@ -1,3 +1,5 @@
+import math
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -21,3 +23,36 @@ def save_sft_model(
         tokenizer.save_pretrained(staging)
         staging.rename(output_dir)
     return output_dir
+
+
+@dataclass(frozen=True)
+class DPOBestCheckpoint:
+    accuracy: float
+    update: int
+    path: Path
+
+
+def save_best_dpo_checkpoint(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    *,
+    accuracy: float,
+    update: int,
+    output_dir: str | Path,
+    best: DPOBestCheckpoint | None = None,
+) -> DPOBestCheckpoint:
+    """Export only on strict accuracy improvement, retaining earlier tied models.
+
+    The caller keeps the returned record between validations. Existing exports
+    remain untouched; this selects inference weights, not resumable train state.
+    """
+    if not math.isfinite(accuracy) or not 0 <= accuracy <= 1:
+        raise ValueError("Validation accuracy must be finite and in [0, 1].")
+    if not isinstance(update, int) or update < 0:
+        raise ValueError("update must be a non-negative integer.")
+    if best is not None and accuracy <= best.accuracy: # 核心判断
+        return best
+    path = Path(output_dir) / f"step_{update:06d}"
+    # HF serialization is identical for SFT and DPO; reuse the safe exporter.
+    saved_path = save_sft_model(model, tokenizer, path)
+    return DPOBestCheckpoint(accuracy, update, saved_path)

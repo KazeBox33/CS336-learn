@@ -8,7 +8,7 @@ SFT 已实现前向、next-token 交叉熵 loss、多 microbatch 累积更新、
 SFT 训练入口已接通配置、日志、定期验证和最终保存，并通过本地 CPU 小模型的命令行端到端测试；
 HH 偏好数据已实现四文件合并、单轮过滤、问题/回答拆分与来源保留；
 单样本 DPO loss、单组梯度累积更新、单 epoch 循环和验证 loss/准确率已实现并通过 CPU 小模型测试；
-完整评测脚本、DPO 最佳 checkpoint 选择和训练入口尚未实现，真实 8B 训练与 GPU 实验仍未运行。
+DPO 最佳 checkpoint 的判断与导出已实现；完整评测脚本和 DPO 训练入口尚未实现，真实 8B 训练与 GPU 实验仍未运行。
 
 ## 文件分类
 
@@ -135,7 +135,13 @@ optimizer 由调用方传入，CPU 测试采用讲义建议的 RMSprop；正式�
 准确率按讲义第 17 页的明确口径：当前模型的 chosen 序列 log-probability 严格高于 rejected 才计为正确，相等算错误。
 这个口径对应 `policy_margin > 0`，不是 `policy_margin - ref_margin > 0`；后者是参考校正后的隐式奖励偏好，两者不混用。
 验证仍需参考模型计算 DPO loss；不永久冻结参数、不清理已有梯度，评分时临时 eval 并恢复模式，空验证集报错。
-本函数只执行一次独立验证；当前不含自动验证间隔、最佳 checkpoint 选择或完整训练入口，也没有真实 GPU 训练结果。
+本函数只执行一次独立验证，不自行安排验证间隔或保存模型。
+最佳模型选择位于 [checkpoint.py](./checkpoint.py)：`save_best_dpo_checkpoint` 接收验证准确率、全局更新编号、输出根目录和上次最佳记录。
+首次验证（即使准确率为 0）会保存；以后仅准确率严格提高时保存，相同准确率保留较早的模型，不以 loss 打破平局。
+返回不可变的 `DPOBestCheckpoint(accuracy, update, path)`；调用方在后续验证时传回它，不提升时直接返回原记录且不写磁盘。
+模型与 tokenizer 保存到 `step_000001` 等独立目录，复用已有安全 HF 导出；新记录只在保存成功后返回，旧目录不覆盖、不删除。
+这里只保存当前模型与 tokenizer，不保存参考模型、optimizer 或数据进度；best 记录目前由调用方保存在内存，完整入口后续再写入运行摘要。
+当前尚未把验证间隔、最佳保存和 epoch 循环接成完整训练入口，也没有真实 GPU 训练结果。
 
 ## 数据和结果
 
@@ -199,6 +205,7 @@ DPO 官方 loss 接口使用 `uv run --frozen pytest -q -k test_per_instance_dpo
 DPO 单次 RMSprop 更新、样本对平均与参考冻结测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_step.py`。
 DPO 单 epoch 分组、尾组、惰性执行及顺序更新测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_epoch.py`。
 DPO 验证 loss、讲义准确率口径、无梯度和模式恢复测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_evaluation.py`。
+DPO 最佳模型判断、平局规则、导出失败与重新加载测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_checkpoint.py`。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。
