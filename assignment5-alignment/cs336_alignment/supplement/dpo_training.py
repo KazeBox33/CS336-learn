@@ -5,7 +5,7 @@ from itertools import islice
 import torch
 from transformers import PreTrainedTokenizerBase
 
-from cs336_alignment.supplement.dpo import compute_per_instance_dpo_loss
+from cs336_alignment.supplement.dpo import compute_dpo_loss_and_margins, compute_per_instance_dpo_loss
 from cs336_alignment.supplement.hh import HHPreferenceExample
 
 
@@ -92,3 +92,38 @@ def run_dpo_epoch(
             "num_examples": metadata["num_examples"],
             "learning_rate": learning_rate,
         }
+
+
+@torch.no_grad()
+def evaluate_dpo(
+    lm: torch.nn.Module,
+    lm_ref: torch.nn.Module,
+    tokenizer: PreTrainedTokenizerBase,
+    examples: Iterable[HHPreferenceExample],
+    beta: float = 0.1,
+) -> dict[str, float | int]:
+    """Mean per-pair loss and policy chosen-vs-rejected accuracy, as in the handout.
+
+    Ties are incorrect. This is raw policy preference accuracy, not the sign of
+    the reference-adjusted DPO margin. Scoring restores both models' modes;
+    evaluation does not freeze parameters or clear existing gradients.
+    """
+    device = next(lm.parameters()).device
+    total_loss = torch.zeros((), device=device)
+    num_correct = torch.zeros((), dtype=torch.long, device=device)
+    num_examples = 0
+    for example in examples:
+        loss, policy_margin, _ = compute_dpo_loss_and_margins(
+            lm, lm_ref, tokenizer, beta,
+            example.instruction, example.chosen, example.rejected,
+        )
+        total_loss += loss
+        num_correct += (policy_margin > 0).long()
+        num_examples += 1
+    if num_examples == 0:
+        raise ValueError("DPO validation requires at least one preference example.")
+    return {
+        "val_loss": (total_loss / num_examples).item(),
+        "val_accuracy": num_correct.item() / num_examples,
+        "num_examples": num_examples,
+    }

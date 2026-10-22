@@ -7,8 +7,8 @@ SFT 已实现前向、next-token 交叉熵 loss、多 microbatch 累积更新、
 已支持模型与 tokenizer 导出并用本地小模型验证重新加载；
 SFT 训练入口已接通配置、日志、定期验证和最终保存，并通过本地 CPU 小模型的命令行端到端测试；
 HH 偏好数据已实现四文件合并、单轮过滤、问题/回答拆分与来源保留；
-单样本 DPO loss、单组梯度累积更新和单 epoch 外层循环已实现并通过 CPU 小模型测试；
-完整评测脚本、DPO 验证和训练入口尚未实现，真实 8B 训练与 GPU 实验仍未运行。
+单样本 DPO loss、单组梯度累积更新、单 epoch 循环和验证 loss/准确率已实现并通过 CPU 小模型测试；
+完整评测脚本、DPO 最佳 checkpoint 选择和训练入口尚未实现，真实 8B 训练与 GPU 实验仍未运行。
 
 ## 文件分类
 
@@ -71,6 +71,8 @@ DPO 单样本 loss 位于 [dpo.py](./dpo.py)，使用相同 Alpaca 模板组织 
 参考模型在 no_grad 下评分，分数移到当前模型设备后计算稳定的 `-logsigmoid(beta * (policy_margin - ref_margin))`。
 评分时临时将两个模型设为 eval 以关闭 dropout，正常返回或报错后恢复进入时的 train/eval 模式；当前模型仍保留计算图。
 函数不 backward、不更新参数、不清理已有梯度，也不永久修改 requires_grad；DPO 训练循环后续再负责冻结参考参数和优化当前模型。
+`compute_dpo_loss_and_margins` 复用这段评分并返回三个标量：loss、当前模型 chosen-minus-rejected 分数差、参考模型分数差。
+原有 `compute_per_instance_dpo_loss` 仍只返回 loss，官方 adapter 接口不变；验证可直接复用两个 margin，不额外运行前向。
 
 实现的导入路径使用 `cs336_alignment.supplement.<模块名>`。
 新增脚本放入 `scripts/supplement/`，当前 SFT 入口为 [train_sft.py](../../scripts/supplement/train_sft.py)。
@@ -129,7 +131,11 @@ optimizer 由调用方传入，CPU 测试采用讲义建议的 RMSprop；正式�
 循环按输入顺序处理，不自动打乱或划分验证集；只收集当前组，不提前读取整个 iterable，也不需要将文本拼成 padding batch。
 它是惰性生成器，必须迭代消费才训练；每次更新完成后 yield 从 1 开始的 epoch 内更新编号，以及组平均 loss、grad norm、样本数和第一参数组学习率。
 空输入不更新、不冻结参考模型；一组失败时不 yield 成功指标，也不继续读取下一组。不把各组 loss 的简单平均当成整个 epoch 的样本平均 loss。
-当前不含验证、最佳 checkpoint 或完整训练入口，也没有真实 GPU 训练结果。
+`evaluate_dpo` 在 no_grad 下逐对验证，按样本对数平均 `val_loss`，返回 `val_accuracy` 和 `num_examples`。
+准确率按讲义第 17 页的明确口径：当前模型的 chosen 序列 log-probability 严格高于 rejected 才计为正确，相等算错误。
+这个口径对应 `policy_margin > 0`，不是 `policy_margin - ref_margin > 0`；后者是参考校正后的隐式奖励偏好，两者不混用。
+验证仍需参考模型计算 DPO loss；不永久冻结参数、不清理已有梯度，评分时临时 eval 并恢复模式，空验证集报错。
+本函数只执行一次独立验证；当前不含自动验证间隔、最佳 checkpoint 选择或完整训练入口，也没有真实 GPU 训练结果。
 
 ## 数据和结果
 
@@ -192,6 +198,7 @@ DPO 官方 loss 接口使用 `uv run --frozen pytest -q -k test_per_instance_dpo
 双 CUDA 设备测试仅在存在两张 CUDA GPU 时运行；CPU 测试通过不代表已验证真实跨 GPU 训练。
 DPO 单次 RMSprop 更新、样本对平均与参考冻结测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_step.py`。
 DPO 单 epoch 分组、尾组、惰性执行及顺序更新测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_epoch.py`。
+DPO 验证 loss、讲义准确率口径、无梯度和模式恢复测试使用 `uv run --frozen pytest -q tests/test_supplement_dpo_evaluation.py`。
 后续按讲义顺序逐个实现、逐个运行对应测试，不把这些失败误认为 GRPO 主线回归。
 新增附加测试统一使用 `tests/test_supplement_*.py` 命名，主线命令已预留相应排除规则。
 附加回归时应把已新增的这些测试文件一起传给 pytest。

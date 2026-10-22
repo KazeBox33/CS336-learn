@@ -15,7 +15,7 @@ def _sequence_log_prob(model: torch.nn.Module, token_ids: list[int]) -> torch.Te
     return scores["log_probs"].sum()
 
 
-def compute_per_instance_dpo_loss(
+def compute_dpo_loss_and_margins(
     lm: torch.nn.Module,
     lm_ref: torch.nn.Module,
     tokenizer: PreTrainedTokenizerBase,
@@ -23,8 +23,8 @@ def compute_per_instance_dpo_loss(
     prompt: str,
     response_chosen: str,
     response_rejected: str,
-) -> torch.Tensor:
-    """Return scalar DPO loss on the policy device, with gradients only through it.
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return loss, policy margin, and reference margin on the policy device.
 
     Score complete Alpaca documents: shared prompt terms cancel within each
     model's chosen-minus-rejected difference. No truncation or length averaging.
@@ -50,7 +50,25 @@ def compute_per_instance_dpo_loss(
         with torch.no_grad():
             ref_margin = _sequence_log_prob(lm_ref, token_sequences[0]) - _sequence_log_prob(lm_ref, token_sequences[1])
         policy_margin = _sequence_log_prob(lm, token_sequences[0]) - _sequence_log_prob(lm, token_sequences[1])
-        return -F.logsigmoid(beta * (policy_margin - ref_margin.to(policy_margin.device)))
+        ref_margin = ref_margin.to(policy_margin.device)
+        loss = -F.logsigmoid(beta * (policy_margin - ref_margin))
+        return loss, policy_margin, ref_margin
     finally:
         lm.train(was_training)
         lm_ref.train(ref_was_training)
+
+
+def compute_per_instance_dpo_loss(
+    lm: torch.nn.Module,
+    lm_ref: torch.nn.Module,
+    tokenizer: PreTrainedTokenizerBase,
+    beta: float,
+    prompt: str,
+    response_chosen: str,
+    response_rejected: str,
+) -> torch.Tensor:
+    """Return scalar DPO loss, retaining only current-policy gradients."""
+    loss, _, _ = compute_dpo_loss_and_margins(
+        lm, lm_ref, tokenizer, beta, prompt, response_chosen, response_rejected,
+    )
+    return loss
