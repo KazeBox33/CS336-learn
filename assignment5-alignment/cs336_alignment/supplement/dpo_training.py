@@ -82,7 +82,7 @@ def run_dpo_epoch(
         raise ValueError("gradient_accumulation_steps must be a positive integer.")
     example_iterator = iter(examples)
     update = 0
-    while group := list(islice(example_iterator, gradient_accumulation_steps)):
+    while group := list(islice(example_iterator, gradient_accumulation_steps)): # 完整过一次训练集，每次取出梯度更新步的数据
         learning_rate = float(optimizer.param_groups[0]["lr"])
         loss, metadata = dpo_train_step(lm, lm_ref, tokenizer, optimizer, group, beta, max_grad_norm)
         update += 1
