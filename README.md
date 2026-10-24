@@ -1,8 +1,8 @@
 # CS336 Learn
 
-从零实现语言模型，深入 GPU 性能优化、分布式训练与 GRPO 后训练，目前开始学习指令微调和偏好对齐。
+从零实现语言模型，深入 GPU 性能优化、分布式训练与 GRPO 后训练，已接通 SFT / DPO 训练链路，开始准备 A5 真实实验。
 
-This repository records my implementation-driven study of Stanford CS336: Language Modeling from Scratch. Assignment 1 covers the complete language-modeling pipeline; Assignment 2 extends it into profiling, memory optimization, FlashAttention-2, DDP, optimizer sharding, and FSDP. Assignment 5 adds GRPO policy gradients, on/off-policy training, and experiment tooling. The optional instruction-tuning and DPO supplement is the current learning focus; the Assignment 3 scaling-law starter remains available for later study.
+This repository records my implementation-driven study of Stanford CS336: Language Modeling from Scratch. Assignment 1 covers the complete language-modeling pipeline; Assignment 2 extends it into profiling, memory optimization, FlashAttention-2, DDP, optimizer sharding, and FSDP. Assignment 5 adds GRPO policy gradients, on/off-policy training, and experiment tooling. The optional SFT and DPO training pipelines are implemented and CPU-tested; the current focus is preparing real A5 experiments. The Assignment 3 scaling-law starter remains available for later study.
 
 ![CS336 learning roadmap](docs/readme/learning-roadmap.svg)
 
@@ -21,11 +21,11 @@ This repository records my implementation-driven study of Stanford CS336: Langua
 | Assignment 5 on/off-policy experiment tooling | Implemented and CPU-tested | Rollouts, fixed old scores, 32 updates per rollout batch, validation, checkpoints, clip fraction, timing and multi-method reports |
 | Assignment 5 GPU experiments | Pending | No real OLMo/vLLM training runs, reward curves or accuracy claims yet |
 | Assignment 5 remaining main-assignment work | Pending | Training-prompt ablation and on-policy-variant experiment configuration, custom estimator, and written analysis |
-| Assignment 5 optional SFT / DPO supplement | MMLU response parser implemented | Full evaluation script, SFT and DPO remain pending |
+| Assignment 5 optional SFT / DPO supplement | Training pipelines implemented and CPU-tested | SFT data/training/export; HH loading, DPO loss/training/validation and best checkpoint selection; full downstream evaluation and real 8B experiments pending |
 
 Assignment 2's core implementation work is complete for now. The remaining work is to organize the parallelism calculations and run the GPU experiments when the required hardware is available; the optional leaderboard optimization is a separate future project.
 
-当前学习位置：A5 附加作业的概览与工具说明，下一步按讲义进入 zero-shot evaluation。
+当前学习位置：SFT / DPO 核心与完整训练入口已接通，转入 A5 主线实验准备。更新日期：2026-10-24。
 A5 主线不标记为整份作业完成：已有核心训练与实验配套代码，但真实实验、部分实验配置和最终分析仍待补充。
 
 ## Assignment 1 / Language Modeling Basics
@@ -112,13 +112,15 @@ Implemented main-assignment work:
 - Training/validation metrics, response snapshots, checkpoints, timing, clip-fraction counts and multi-seed/multi-method plots.
 - A four-method experiment planner that prints commands by default and launches training only with explicit `--execute`.
 
-Latest local main-track regression: **518 tests passed** on CPU, including tiny-model training and synthetic-log plotting checks. Optional SFT/DPO tests are excluded because their adapters are not implemented yet. These tests are not evidence of GPU training quality or speed.
+Latest local regression (2026-10-24): **753 passed, 1 skipped** across main-track and supplement tests, excluding `test_metrics.py`; the MMLU cases in that file separately passed **2 tests**. The supplement GSM8K response-parser adapter is still unimplemented. CPU/tiny-model and synthetic-log tests are not evidence of GPU training quality or speed.
 
 Still pending: real GPU experiments and analysis; exposing the existing on-policy variant settings and alternate training prompts in the experiment CLI; the custom policy-gradient estimator in Section 7. Optional CISPO and constant-normalized GSPO extensions are not implemented.
 
-The [optional supplement](assignment5-alignment/cs336_alignment/supplement/README.md) covers zero-shot evaluation, SFT, safety evaluation and DPO. Its new code belongs in `cs336_alignment/supplement/` and its new entry points in `scripts/supplement/`. MMLU response parsing is implemented; full evaluation and training implementations remain pending. Existing main-track code and official tests remain in place.
+The [optional supplement](assignment5-alignment/cs336_alignment/supplement/README.md) covers zero-shot evaluation, SFT, safety evaluation and DPO. Implemented: MMLU parsing/data/prompts, packed SFT data, gradient accumulation, validation, scheduling, HF export and a complete SFT CLI; HH preference loading, DPO loss, frozen-reference training, validation and best-checkpoint export through a complete DPO CLI. Both training entry points have local CPU end-to-end tests. Real Llama 8B training, downstream evaluation pipelines, learning curves and qualitative analyses remain pending. Existing main-track code and official tests remain in place.
 
 Experiment guides: [prompting baselines](assignment5-alignment/PROMPTING_BASELINES.md), [standard GRPO](assignment5-alignment/GRPO_EXPERIMENT_GUIDE.md), and [off-policy comparison](assignment5-alignment/OFF_POLICY_EXPERIMENT_GUIDE.md). GPU experiments will be added when hardware is ready; no validation-accuracy target is claimed as achieved.
+
+Start here: [A5 experiment roadmap](assignment5-alignment/EXPERIMENT_ROADMAP.md), separating runnable experiments, missing experiment wiring, formal multi-seed runs and the optional SFT/DPO track.
 
 ## Repository Layout
 
@@ -163,7 +165,14 @@ uv run --frozen --with matplotlib pytest -q \
   --ignore-glob='tests/test_supplement_*.py'
 ```
 
-The optional supplement's official tests are `test_metrics.py`, `test_data.py` and `test_dpo.py`; MMLU response parsing is implemented, while the remaining interfaces are pending. See the [supplement guide](assignment5-alignment/cs336_alignment/supplement/README.md) for separate test commands and output-directory conventions.
+Combined main/supplement CPU regression (excludes the metric file containing the unfinished GSM8K parser):
+
+```bash
+uv run --frozen --with matplotlib pytest -q --ignore=tests/test_metrics.py
+uv run --frozen pytest -q tests/test_metrics.py -k mmlu
+```
+
+The supplement data and DPO adapters are connected; MMLU parsing is connected, while the supplement GSM8K parser is pending. See the [supplement guide](assignment5-alignment/cs336_alignment/supplement/README.md) for focused tests and output-directory conventions.
 
 Regenerate README figures:
 

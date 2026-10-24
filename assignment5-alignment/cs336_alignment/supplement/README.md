@@ -206,7 +206,8 @@ MMLU 数据读取和 prompt 构造测试：
 uv run --frozen pytest -q tests/test_supplement_mmlu_preparation.py
 ```
 
-其余附加测试仍包含未实现接口，预期会失败。
+`test_metrics.py` 的附加 GSM8K 解析接口仍未实现，直接运行整个文件会失败；
+`test_data.py`、`test_dpo.py` 和新增 SFT/DPO 测试已接通，不再一概视为未实现。
 SFT 数据准备、定长数据集与批处理可用 `uv run --locked --extra plots pytest -q tests/test_supplement_sft_data.py tests/test_data.py` 单独验证；
 `get_packed_sft_dataset` 与 `run_iterate_batches` 均已接通。
 SFT 前向、loss 与梯度测试使用 `uv run --frozen pytest -q tests/test_supplement_sft_loss.py`，
@@ -233,4 +234,5 @@ DPO 数据划分、完整编排与真实 CPU 命令行端到端测试使用 `uv 
 ## 学习顺序
 
 Zero-shot evaluation -> SFT 数据与训练 -> SFT 后评测与安全检查 -> HH 偏好数据 -> DPO。
-这里不提前实现后面的算法，也不启动真实 GPU 实验。
+以上是学习依赖顺序，当前 SFT / DPO 训练入口已接通，真实 GPU 实验尚未启动。
+主线与附加作业的实验优先级见 [实验路线](../../EXPERIMENT_ROADMAP.md)。

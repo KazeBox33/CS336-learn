@@ -15,12 +15,14 @@ raise a GitHub issue or open a pull request with a fix.
 | 主线 prompting baseline | 代码已实现 | GSM8K 提示、生成、评分与日志；真实 GPU 测量及分析待做 |
 | GRPO 核心与 on-policy 变体 | 代码已实现 | 奖励与 advantage、序列/常数归一化、零 advantage 剪枝、梯度累积和训练步 |
 | Off-policy GRPO / GSPO | 核心与 6.4 配套代码已实现 | 固定旧评分、每批 rollout 多次更新、clip fraction、耗时、实验计划和方法对比报告 |
-| 本地主线回归 | 518 项通过 | CPU 小模型与合成日志测试，不代表实际 GPU 训练效果；不含附加作业测试 |
+| 本地主线与附加回归 | 753 项通过、1 项跳过；MMLU 另 2 项通过 | 2026-10-24 运行；排除 test_metrics.py 后单测其 MMLU 部分，附加 GSM8K 解析仍未实现；不代表 GPU 训练效果 |
 | 真实 GPU 实验与报告分析 | 待完成 | 尚未运行正式 OLMo/vLLM 实验，不宣称准确率提升、速度提升或达到 25% |
 | 其他主线交付 | 待完成 | 训练 prompt 消融与 on-policy 变体的 CLI 配置、自定义 estimator、理论讨论及实验分析整理 |
-| 附加作业 SFT / DPO | 已开始学习，算法待实现 | 已阅读概览和工具说明并整理目录；答案解析、数据加载、SFT/DPO 训练及评测尚未实现 |
+| 附加作业 SFT | 训练入口与 CPU 端到端测试已完成 | 数据打包、loss、梯度累积、验证、学习率调度和模型/tokenizer 导出；真实 8B 训练待做 |
+| 附加作业 DPO | 训练入口与 CPU 端到端测试已完成 | HH 数据、loss、冻结参考模型、训练/验证、最佳模型导出；真实训练和完整下游评测待做 |
 
-当前学习位置：附加作业概览，接下来按讲义进入 zero-shot evaluation。
+当前学习位置：SFT / DPO 核心学习和训练入口已接通，开始准备主线真实 GPU 实验。
+实验顺序、硬件边界和交付清单见 [实验路线](./EXPERIMENT_ROADMAP.md)。
 可选 CISPO、常数归一化 GSPO 扩展和 checkpoint 恢复训练入口也尚未实现，
 不把这些可选扩展与必做内容混为一谈。
 
@@ -44,7 +46,7 @@ raise a GitHub issue or open a pull request with a fix.
 附加作业的详细文件归属、后续命名约定和测试命令见
 [附加作业目录说明](./cs336_alignment/supplement/README.md)。
 已有实验结果不搬迁；后续附加作业的输出统一使用 `results/supplement/`。
-目录已分类不代表附加作业算法已实现，真实 GPU 实验仍待完成。
+训练入口已实现不代表真实实验完成；尚无 8B 训练或下游评测结果。
 
 ## Setup
 
@@ -63,10 +65,9 @@ uv run --frozen pytest tests/test_grpo.py
 ```
 
 The main GRPO adapters in [./tests/adapters.py](./tests/adapters.py) are connected
-to the implementations and pass the local regression. The optional supplement's
-MMLU response parser is connected; its other adapters remain unimplemented and
-their failures should not be mistaken for
-main-track regressions. Separate main/supplement test commands are documented in
+to the implementations and pass the local regression. The supplement data, DPO,
+and MMLU parser adapters are connected; its GSM8K response parser is still pending.
+Separate main/supplement test commands are documented in
 [the supplement guide](./cs336_alignment/supplement/README.md).
 
 ## Prompting Baselines
